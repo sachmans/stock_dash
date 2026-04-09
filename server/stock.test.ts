@@ -195,3 +195,199 @@ describe("stock.getInsights", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("stock.getChart for watchlist symbols", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const MOCK_GOLD_RESPONSE = {
+    chart: {
+      result: [
+        {
+          meta: {
+            symbol: "GC=F",
+            longName: "Gold Futures",
+            regularMarketPrice: 4793.30,
+            chartPreviousClose: 4777.20,
+            regularMarketDayHigh: 4802.80,
+            regularMarketDayLow: 4718.60,
+            regularMarketVolume: 78200,
+            fiftyTwoWeekHigh: 5000.0,
+            fiftyTwoWeekLow: 3200.0,
+            currency: "USD",
+            exchangeName: "COMEX",
+            marketState: "REGULAR",
+          },
+          timestamp: [1712600000],
+          indicators: {
+            quote: [
+              {
+                open: [4770.0],
+                high: [4802.80],
+                low: [4718.60],
+                close: [4793.30],
+                volume: [78200],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  const MOCK_SILVER_RESPONSE = {
+    chart: {
+      result: [
+        {
+          meta: {
+            symbol: "SI=F",
+            longName: "Silver Futures",
+            regularMarketPrice: 75.10,
+            chartPreviousClose: 75.385,
+            regularMarketDayHigh: 75.48,
+            regularMarketDayLow: 72.93,
+            regularMarketVolume: 17500,
+            fiftyTwoWeekHigh: 80.0,
+            fiftyTwoWeekLow: 25.0,
+            currency: "USD",
+            exchangeName: "COMEX",
+            marketState: "REGULAR",
+          },
+          timestamp: [1712600000],
+          indicators: {
+            quote: [
+              {
+                open: [74.50],
+                high: [75.48],
+                low: [72.93],
+                close: [75.10],
+                volume: [17500],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  const MOCK_DEWA_RESPONSE = {
+    chart: {
+      result: [
+        {
+          meta: {
+            symbol: "DEWA.AE",
+            longName: "Dubai Electricity & Water Authority",
+            regularMarketPrice: 2.81,
+            chartPreviousClose: 2.85,
+            regularMarketDayHigh: 2.84,
+            regularMarketDayLow: 2.75,
+            regularMarketVolume: 23200000,
+            fiftyTwoWeekHigh: 3.50,
+            fiftyTwoWeekLow: 2.20,
+            currency: "AED",
+            exchangeName: "DFM",
+            marketState: "REGULAR",
+          },
+          timestamp: [1712600000],
+          indicators: {
+            quote: [
+              {
+                open: [2.82],
+                high: [2.84],
+                low: [2.75],
+                close: [2.81],
+                volume: [23200000],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  it("fetches Gold futures (GC=F) data correctly", async () => {
+    mockedCallDataApi.mockResolvedValueOnce(MOCK_GOLD_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getChart({
+      symbol: "GC=F",
+      range: "1d",
+      interval: "1d",
+      region: "GB",
+    });
+
+    expect(result).toBeTruthy();
+    expect((result as any).chart.result[0].meta.symbol).toBe("GC=F");
+    expect((result as any).chart.result[0].meta.regularMarketPrice).toBe(4793.30);
+    expect((result as any).chart.result[0].meta.currency).toBe("USD");
+
+    expect(mockedCallDataApi).toHaveBeenCalledWith("YahooFinance/get_stock_chart", {
+      query: {
+        symbol: "GC=F",
+        region: "GB",
+        interval: "1d",
+        range: "1d",
+        includeAdjustedClose: "true",
+      },
+    });
+  });
+
+  it("fetches Silver futures (SI=F) data correctly", async () => {
+    mockedCallDataApi.mockResolvedValueOnce(MOCK_SILVER_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getChart({
+      symbol: "SI=F",
+      range: "1d",
+      interval: "1d",
+      region: "GB",
+    });
+
+    expect(result).toBeTruthy();
+    expect((result as any).chart.result[0].meta.symbol).toBe("SI=F");
+    expect((result as any).chart.result[0].meta.regularMarketPrice).toBe(75.10);
+  });
+
+  it("fetches DEWA (DEWA.AE) data correctly with AED currency", async () => {
+    mockedCallDataApi.mockResolvedValueOnce(MOCK_DEWA_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getChart({
+      symbol: "DEWA.AE",
+      range: "1d",
+      interval: "1d",
+      region: "GB",
+    });
+
+    expect(result).toBeTruthy();
+    expect((result as any).chart.result[0].meta.symbol).toBe("DEWA.AE");
+    expect((result as any).chart.result[0].meta.currency).toBe("AED");
+    expect((result as any).chart.result[0].meta.regularMarketPrice).toBe(2.81);
+  });
+
+  it("handles multiple sequential watchlist queries", async () => {
+    mockedCallDataApi
+      .mockResolvedValueOnce(MOCK_GOLD_RESPONSE)
+      .mockResolvedValueOnce(MOCK_SILVER_RESPONSE)
+      .mockResolvedValueOnce(MOCK_DEWA_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const goldResult = await caller.stock.getChart({ symbol: "GC=F", range: "1d", interval: "1d" });
+    const silverResult = await caller.stock.getChart({ symbol: "SI=F", range: "1d", interval: "1d" });
+    const dewaResult = await caller.stock.getChart({ symbol: "DEWA.AE", range: "1d", interval: "1d" });
+
+    expect(goldResult).toBeTruthy();
+    expect(silverResult).toBeTruthy();
+    expect(dewaResult).toBeTruthy();
+    expect(mockedCallDataApi).toHaveBeenCalledTimes(3);
+  });
+});

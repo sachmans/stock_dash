@@ -16,6 +16,16 @@ export interface Position {
   positionId?: string;
 }
 
+export interface WatchlistItem {
+  id: string;
+  symbol: string;
+  yahooSymbol: string;
+  name: string;
+  exchange: string;
+  currency: string;
+  category: 'commodity' | 'stock' | 'etf' | 'crypto';
+}
+
 export interface StockQuote {
   symbol: string;
   name: string;

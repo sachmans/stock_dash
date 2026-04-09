@@ -16,3 +16,9 @@
 - [x] Mobile responsive layout with floating add button
 - [x] P&L calculation (unrealized, cost basis, market value)
 - [x] Write vitest tests for stock data router
+- [x] Add watchlist section separate from portfolio
+- [x] Add Gold ticker to watchlist
+- [x] Add Silver ticker to watchlist
+- [x] Add DEWA ticker to watchlist
+- [x] Watchlist shows live prices with auto-refresh
+- [x] Write vitest tests for watchlist feature

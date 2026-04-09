@@ -8,6 +8,7 @@
  * - Price chart (2/3 width)
  * - Position card (1/3 width)
  * - Market stats strip
+ * - Watchlist (separate from portfolio)
  * - News feed
  */
 
@@ -19,18 +20,25 @@ import HeroBanner from '@/components/HeroBanner';
 import PriceChart from '@/components/PriceChart';
 import PositionCard from '@/components/PositionCard';
 import MarketStats from '@/components/MarketStats';
+import Watchlist from '@/components/Watchlist';
+import AddToWatchlistDialog from '@/components/AddToWatchlistDialog';
 import NewsFeed from '@/components/NewsFeed';
 import AddPositionDialog from '@/components/AddPositionDialog';
 import { getPositions } from '@/lib/portfolio';
+import { getWatchlist, addToWatchlist, removeFromWatchlist } from '@/lib/watchlist';
 import { useStockData } from '@/hooks/useStockData';
 import { useNews } from '@/hooks/useNews';
-import type { Position, TimeRange } from '@/lib/types';
+import type { Position, WatchlistItem, TimeRange } from '@/lib/types';
 
 export default function Home() {
   const [positions, setPositions] = useState<Position[]>(() => getPositions());
   const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>('1mo');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+
+  // Watchlist state
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>(() => getWatchlist());
+  const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
 
   // Select first position by default
   useEffect(() => {
@@ -44,10 +52,13 @@ export default function Home() {
   // Fetch stock data for the selected position
   const { quote, chart, loading: stockLoading, error: stockError, refetch } = useStockData(activeSymbol, timeRange);
 
-  // Fetch news for all position symbols
+  // Fetch news for all position + watchlist symbols
   const newsSymbols = useMemo(
-    () => positions.map((p) => p.yahooSymbol),
-    [positions]
+    () => [
+      ...positions.map((p) => p.yahooSymbol),
+      ...watchlistItems.map((w) => w.yahooSymbol),
+    ],
+    [positions, watchlistItems]
   );
   const { news, loading: newsLoading } = useNews(newsSymbols);
 
@@ -72,6 +83,22 @@ export default function Home() {
     setPositions(updated);
     setAddDialogOpen(false);
   }, []);
+
+  // Watchlist handlers
+  const handleAddToWatchlist = useCallback((item: Omit<WatchlistItem, 'id'>) => {
+    addToWatchlist(item);
+    setWatchlistItems(getWatchlist());
+  }, []);
+
+  const handleRemoveFromWatchlist = useCallback((id: string) => {
+    removeFromWatchlist(id);
+    setWatchlistItems(getWatchlist());
+  }, []);
+
+  const existingWatchlistSymbols = useMemo(
+    () => watchlistItems.map((w) => w.yahooSymbol),
+    [watchlistItems]
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -143,6 +170,13 @@ export default function Home() {
         {/* Market Stats */}
         <MarketStats quote={quote} loading={stockLoading} />
 
+        {/* Watchlist Section */}
+        <Watchlist
+          items={watchlistItems}
+          onRemove={handleRemoveFromWatchlist}
+          onAdd={() => setWatchlistDialogOpen(true)}
+        />
+
         {/* News Feed */}
         <NewsFeed news={news} loading={newsLoading} />
 
@@ -163,6 +197,14 @@ export default function Home() {
         open={addDialogOpen}
         onClose={() => setAddDialogOpen(false)}
         onAdded={handlePositionAdded}
+      />
+
+      {/* Add to Watchlist Dialog */}
+      <AddToWatchlistDialog
+        open={watchlistDialogOpen}
+        onClose={() => setWatchlistDialogOpen(false)}
+        onAdd={handleAddToWatchlist}
+        existingSymbols={existingWatchlistSymbols}
       />
     </div>
   );
