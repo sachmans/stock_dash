@@ -22,3 +22,8 @@
 - [x] Add DEWA ticker to watchlist
 - [x] Watchlist shows live prices with auto-refresh
 - [x] Write vitest tests for watchlist feature
+- [x] Make watchlist items clickable to show their chart in the main view
+- [x] Add AI stock analysis tRPC procedure using LLM
+- [x] Build StockAnalysis UI component with buy/sell confidence gauge
+- [x] Show analysis panel for both portfolio and watchlist items
+- [x] Write vitest tests for AI analysis feature

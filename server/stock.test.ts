@@ -7,8 +7,15 @@ vi.mock("./_core/dataApi", () => ({
   callDataApi: vi.fn(),
 }));
 
+// Mock the invokeLLM function
+vi.mock("./_core/llm", () => ({
+  invokeLLM: vi.fn(),
+}));
+
 import { callDataApi } from "./_core/dataApi";
+import { invokeLLM } from "./_core/llm";
 const mockedCallDataApi = vi.mocked(callDataApi);
+const mockedInvokeLLM = vi.mocked(invokeLLM);
 
 function createPublicContext(): TrpcContext {
   return {
@@ -389,5 +396,185 @@ describe("stock.getChart for watchlist symbols", () => {
     expect(silverResult).toBeTruthy();
     expect(dewaResult).toBeTruthy();
     expect(mockedCallDataApi).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("stock.getAnalysis", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const MOCK_ANALYSIS_INPUT = {
+    symbol: "BRNT.L",
+    name: "WisdomTree Brent Crude Oil ETC",
+    price: 78.44,
+    change: 0.71,
+    changePercent: 0.91,
+    dayHigh: 79.1,
+    dayLow: 77.5,
+    fiftyTwoWeekHigh: 95.0,
+    fiftyTwoWeekLow: 60.0,
+    volume: 12345,
+    previousClose: 77.73,
+    currency: "USD",
+    exchange: "LSE",
+  };
+
+  const MOCK_LLM_RESPONSE = {
+    id: "test-id",
+    created: Date.now(),
+    model: "gemini-2.5-flash",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant" as const,
+          content: JSON.stringify({
+            recommendation: "BUY",
+            confidence: 72,
+            summary: "BRNT shows bullish momentum with price recovering from recent lows. The 0.91% daily gain suggests renewed buying interest in crude oil ETCs.",
+            bullCase: "Oil prices are supported by OPEC+ production cuts and geopolitical tensions in key producing regions, which could drive prices toward the 52-week high.",
+            bearCase: "Global economic slowdown concerns and potential demand destruction could cap upside, with the instrument trading well below its 52-week high of 95.00.",
+            keyLevels: {
+              support: 77.00,
+              resistance: 80.50,
+              target: 85.00,
+            },
+            riskLevel: "MEDIUM",
+            catalysts: [
+              "OPEC+ production decision at next meeting",
+              "US crude oil inventory data release",
+              "Global PMI data indicating demand trends",
+            ],
+          }),
+        },
+        finish_reason: "stop",
+      },
+    ],
+    usage: {
+      prompt_tokens: 500,
+      completion_tokens: 200,
+      total_tokens: 700,
+    },
+  };
+
+  it("returns structured analysis for a valid instrument", async () => {
+    mockedInvokeLLM.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
+
+    expect(result).toBeTruthy();
+    expect(result!.recommendation).toBe("BUY");
+    expect(result!.confidence).toBe(72);
+    expect(result!.summary).toContain("bullish momentum");
+    expect(result!.keyLevels.support).toBe(77.00);
+    expect(result!.keyLevels.resistance).toBe(80.50);
+    expect(result!.keyLevels.target).toBe(85.00);
+    expect(result!.riskLevel).toBe("MEDIUM");
+    expect(result!.catalysts).toHaveLength(3);
+    expect(result!.symbol).toBe("BRNT.L");
+    expect(result!.analyzedAt).toBeDefined();
+  });
+
+  it("passes correct parameters to invokeLLM", async () => {
+    mockedInvokeLLM.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
+
+    expect(mockedInvokeLLM).toHaveBeenCalledTimes(1);
+    const callArgs = mockedInvokeLLM.mock.calls[0][0];
+    expect(callArgs.messages).toHaveLength(2);
+    expect(callArgs.messages[0].role).toBe("system");
+    expect(callArgs.messages[1].role).toBe("user");
+    expect(callArgs.response_format).toBeDefined();
+    expect((callArgs.response_format as any).type).toBe("json_schema");
+  });
+
+  it("returns null when LLM call fails", async () => {
+    mockedInvokeLLM.mockRejectedValueOnce(new Error("LLM unavailable"));
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when LLM returns invalid JSON", async () => {
+    const invalidResponse = {
+      ...MOCK_LLM_RESPONSE,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant" as const,
+            content: "This is not valid JSON",
+          },
+          finish_reason: "stop",
+        },
+      ],
+    };
+    mockedInvokeLLM.mockResolvedValueOnce(invalidResponse);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
+
+    expect(result).toBeNull();
+  });
+
+  it("works with Gold futures input", async () => {
+    const goldLLMResponse = {
+      ...MOCK_LLM_RESPONSE,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant" as const,
+            content: JSON.stringify({
+              recommendation: "STRONG_BUY",
+              confidence: 85,
+              summary: "Gold is in a strong uptrend driven by safe-haven demand.",
+              bullCase: "Central bank buying and inflation hedging continue to support gold prices.",
+              bearCase: "Rising real yields could pressure gold if the Fed maintains hawkish stance.",
+              keyLevels: { support: 4700, resistance: 4850, target: 5000 },
+              riskLevel: "LOW",
+              catalysts: ["Fed rate decision", "Geopolitical tensions"],
+            }),
+          },
+          finish_reason: "stop",
+        },
+      ],
+    };
+    mockedInvokeLLM.mockResolvedValueOnce(goldLLMResponse);
+
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.stock.getAnalysis({
+      symbol: "GC=F",
+      name: "Gold Futures",
+      price: 4793.30,
+      change: 16.10,
+      changePercent: 0.34,
+      dayHigh: 4802.80,
+      dayLow: 4718.60,
+      volume: 78200,
+      currency: "USD",
+      exchange: "COMEX",
+    });
+
+    expect(result).toBeTruthy();
+    expect(result!.recommendation).toBe("STRONG_BUY");
+    expect(result!.confidence).toBe(85);
+    expect(result!.symbol).toBe("GC=F");
   });
 });

@@ -3,12 +3,12 @@
  * Design: Dark Command Center
  * 
  * Displays a watchlist of instruments with live prices.
+ * Clicking a row selects it and shows its chart in the main view.
  * Separate from the portfolio section.
  */
 
-import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Eye, TrendingUp, TrendingDown, Minus, X, Plus, Loader2, Sparkles } from 'lucide-react';
+import { Eye, TrendingUp, TrendingDown, X, Plus, Loader2, Sparkles, ChevronRight } from 'lucide-react';
 import { useWatchlistQuote } from '@/hooks/useWatchlistData';
 import { formatNumber, formatPercent, formatChange, formatVolume, formatTime } from '@/lib/format';
 import type { WatchlistItem } from '@/lib/types';
@@ -22,7 +22,17 @@ const CATEGORY_CONFIG: Record<string, { icon: string; color: string }> = {
 };
 
 /* ─── Individual Watchlist Row ─── */
-function WatchlistRow({ item, onRemove }: { item: WatchlistItem; onRemove: (id: string) => void }) {
+function WatchlistRow({
+  item,
+  onRemove,
+  onSelect,
+  isSelected,
+}: {
+  item: WatchlistItem;
+  onRemove: (id: string) => void;
+  onSelect: (item: WatchlistItem) => void;
+  isSelected: boolean;
+}) {
   const { quote, loading } = useWatchlistQuote(item.yahooSymbol);
 
   const isPositive = (quote?.change ?? 0) >= 0;
@@ -35,7 +45,12 @@ function WatchlistRow({ item, onRemove }: { item: WatchlistItem; onRemove: (id: 
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -20, height: 0 }}
       transition={{ duration: 0.25 }}
-      className="group relative flex items-center gap-4 px-4 py-3.5 rounded-lg bg-secondary/20 hover:bg-secondary/40 border border-border/20 hover:border-border/40 transition-all"
+      onClick={() => onSelect(item)}
+      className={`group relative flex items-center gap-4 px-4 py-3.5 rounded-lg cursor-pointer transition-all ${
+        isSelected
+          ? 'bg-primary/10 border border-primary/40 ring-1 ring-primary/20'
+          : 'bg-secondary/20 hover:bg-secondary/40 border border-border/20 hover:border-border/40'
+      }`}
     >
       {/* Symbol & Name */}
       <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -50,6 +65,11 @@ function WatchlistRow({ item, onRemove }: { item: WatchlistItem; onRemove: (id: 
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 bg-secondary/40 px-1.5 py-0.5 rounded">
               {item.exchange}
             </span>
+            {isSelected && (
+              <span className="text-[10px] uppercase tracking-wider text-primary bg-primary/10 px-1.5 py-0.5 rounded font-medium">
+                Viewing
+              </span>
+            )}
           </div>
           <p className="text-xs text-muted-foreground truncate">
             {item.name}
@@ -102,10 +122,18 @@ function WatchlistRow({ item, onRemove }: { item: WatchlistItem; onRemove: (id: 
         </div>
       )}
 
+      {/* View chart indicator */}
+      <ChevronRight className={`h-4 w-4 shrink-0 transition-colors ${
+        isSelected ? 'text-primary' : 'text-muted-foreground/30 group-hover:text-muted-foreground/60'
+      }`} />
+
       {/* Remove button */}
       <button
-        onClick={() => onRemove(item.id)}
-        className="opacity-0 group-hover:opacity-100 absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-destructive/80 text-destructive-foreground text-[10px] transition-opacity hover:bg-destructive"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(item.id);
+        }}
+        className="opacity-0 group-hover:opacity-100 absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-destructive/80 text-destructive-foreground text-[10px] transition-opacity hover:bg-destructive z-10"
         title="Remove from watchlist"
       >
         <X className="h-3 w-3" />
@@ -136,10 +164,12 @@ interface WatchlistProps {
   items: WatchlistItem[];
   onRemove: (id: string) => void;
   onAdd: () => void;
+  onSelect: (item: WatchlistItem) => void;
+  selectedSymbol?: string;
   loading?: boolean;
 }
 
-export default function Watchlist({ items, onRemove, onAdd, loading }: WatchlistProps) {
+export default function Watchlist({ items, onRemove, onAdd, onSelect, selectedSymbol, loading }: WatchlistProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -167,6 +197,11 @@ export default function Watchlist({ items, onRemove, onAdd, loading }: Watchlist
         </button>
       </div>
 
+      {/* Click hint */}
+      <p className="text-[10px] text-muted-foreground/50 mb-3 uppercase tracking-wider">
+        Click any item to view its chart and AI analysis
+      </p>
+
       {/* Watchlist Items */}
       <div className="space-y-2">
         {loading ? (
@@ -188,6 +223,8 @@ export default function Watchlist({ items, onRemove, onAdd, loading }: Watchlist
                 key={item.id}
                 item={item}
                 onRemove={onRemove}
+                onSelect={onSelect}
+                isSelected={selectedSymbol === item.yahooSymbol}
               />
             ))}
           </AnimatePresence>
