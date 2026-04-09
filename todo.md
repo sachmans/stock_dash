@@ -1,0 +1,18 @@
+# Project TODO
+
+- [x] Dark command center theme with glassmorphism cards
+- [x] Space Grotesk + Inter typography
+- [x] Header with portfolio summary (value, P&L, live indicator)
+- [x] Hero banner with oil commodity image
+- [x] Price chart with 7 time ranges (1D, 5D, 1M, 3M, 6M, 1Y, YTD)
+- [x] Position card with BRNT details (250 @ 78.660)
+- [x] Market stats strip (day range, 52W high/low, volume)
+- [x] News feed with Yahoo Finance insights + fallback news
+- [x] Add position dialog for adding new stocks
+- [x] Live data via tRPC + Manus Data API (Yahoo Finance)
+- [x] 30-second auto-refresh for stock data
+- [x] 2-minute auto-refresh for news
+- [x] Multiple position tabs support
+- [x] Mobile responsive layout with floating add button
+- [x] P&L calculation (unrealized, cost basis, market value)
+- [x] Write vitest tests for stock data router
