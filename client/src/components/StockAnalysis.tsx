@@ -190,7 +190,7 @@ export default function StockAnalysis(props: StockAnalysisProps) {
   const [expanded, setExpanded] = useState(true);
 
   // Use tRPC to fetch analysis — enabled only when we have valid price data
-  const { data: analysis, isLoading, refetch, isFetching } = trpc.stock.getAnalysis.useQuery(
+  const { data: rawAnalysis, isLoading, refetch, isFetching } = trpc.stock.getAnalysis.useQuery(
     {
       symbol: props.symbol,
       name: props.name,
@@ -213,6 +213,7 @@ export default function StockAnalysis(props: StockAnalysisProps) {
     }
   );
 
+  const analysis = rawAnalysis as AnalysisData | null | undefined;
   const recConfig = analysis ? (REC_CONFIG[analysis.recommendation] || REC_CONFIG.HOLD) : null;
   const RecIcon = recConfig?.icon || Minus;
 

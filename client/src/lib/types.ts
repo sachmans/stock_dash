@@ -3,6 +3,9 @@
  * Design: Dark Command Center
  */
 
+/** Asset type discriminator for portfolio items */
+export type AssetType = 'commodity' | 'stock' | 'etf' | 'forex';
+
 export interface Position {
   id: string;
   symbol: string;
@@ -14,6 +17,35 @@ export interface Position {
   currency: string;
   openedDate: string;
   positionId?: string;
+  assetType?: AssetType;
+}
+
+/**
+ * Forex position representing a currency pair trade.
+ * Tracks the bought and sold currencies with their amounts and the entry rate.
+ */
+export interface ForexPosition {
+  id: string;
+  /** Display symbol, e.g. "USD/CHF" */
+  symbol: string;
+  /** Yahoo Finance symbol for live rate, e.g. "USDCHF=X" */
+  yahooSymbol: string;
+  /** Descriptive name */
+  name: string;
+  /** The currency that was bought */
+  boughtCurrency: string;
+  /** Amount of the bought currency */
+  boughtAmount: number;
+  /** The currency that was sold */
+  soldCurrency: string;
+  /** Amount of the sold currency */
+  soldAmount: number;
+  /** Entry exchange rate (sold/bought) */
+  entryRate: number;
+  /** Date the trade was executed */
+  tradeDate: string;
+  /** Direction: 'buy' means bought the base currency */
+  direction: 'buy' | 'sell';
 }
 
 export interface WatchlistItem {
@@ -23,7 +55,7 @@ export interface WatchlistItem {
   name: string;
   exchange: string;
   currency: string;
-  category: 'commodity' | 'stock' | 'etf' | 'crypto';
+  category: 'commodity' | 'stock' | 'etf' | 'crypto' | 'forex';
 }
 
 export interface StockQuote {

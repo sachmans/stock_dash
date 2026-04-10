@@ -5,8 +5,9 @@
  * Main dashboard page assembling all components:
  * - Header with portfolio summary
  * - Hero banner
- * - Price chart (2/3 width) + Position/Watchlist detail card (1/3 width)
+ * - Price chart (2/3 width) + Position/Watchlist/Forex detail card (1/3 width)
  * - AI Analysis panel
+ * - Forex Positions section
  * - Market stats strip
  * - Watchlist (clickable to switch chart view)
  * - News feed
@@ -19,6 +20,8 @@ import Header from '@/components/Header';
 import HeroBanner from '@/components/HeroBanner';
 import PriceChart from '@/components/PriceChart';
 import PositionCard from '@/components/PositionCard';
+import ForexCard from '@/components/ForexCard';
+import ForexSummary from '@/components/ForexSummary';
 import MarketStats from '@/components/MarketStats';
 import Watchlist from '@/components/Watchlist';
 import AddToWatchlistDialog from '@/components/AddToWatchlistDialog';
@@ -26,21 +29,24 @@ import NewsFeed from '@/components/NewsFeed';
 import AddPositionDialog from '@/components/AddPositionDialog';
 import StockAnalysis from '@/components/StockAnalysis';
 import { getPositions } from '@/lib/portfolio';
+import { getForexPositions } from '@/lib/forex';
 import { getWatchlist, addToWatchlist, removeFromWatchlist } from '@/lib/watchlist';
 import { useStockData } from '@/hooks/useStockData';
 import { useNews } from '@/hooks/useNews';
-import type { Position, WatchlistItem, TimeRange } from '@/lib/types';
+import type { Position, ForexPosition, WatchlistItem, TimeRange } from '@/lib/types';
 
 /**
  * Represents which instrument is currently selected for the main chart view.
- * Can be either a portfolio position or a watchlist item.
+ * Can be a portfolio position, a watchlist item, or a forex position.
  */
 type ViewMode = 
   | { type: 'position'; position: Position }
-  | { type: 'watchlist'; item: WatchlistItem };
+  | { type: 'watchlist'; item: WatchlistItem }
+  | { type: 'forex'; position: ForexPosition };
 
 export default function Home() {
   const [positions, setPositions] = useState<Position[]>(() => getPositions());
+  const [forexPositions] = useState<ForexPosition[]>(() => getForexPositions());
   const [timeRange, setTimeRange] = useState<TimeRange>('1mo');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
 
@@ -61,29 +67,32 @@ export default function Home() {
   // Derive the active symbol from the view mode
   const activeSymbol = useMemo(() => {
     if (!viewMode) return 'BRNT.L';
-    return viewMode.type === 'position'
-      ? viewMode.position.yahooSymbol
-      : viewMode.item.yahooSymbol;
+    if (viewMode.type === 'position') return viewMode.position.yahooSymbol;
+    if (viewMode.type === 'watchlist') return viewMode.item.yahooSymbol;
+    if (viewMode.type === 'forex') return viewMode.position.yahooSymbol;
+    return 'BRNT.L';
   }, [viewMode]);
 
   // Derive display name for the active instrument
   const activeName = useMemo(() => {
     if (!viewMode) return 'BRNT';
-    return viewMode.type === 'position'
-      ? viewMode.position.name
-      : viewMode.item.name;
+    if (viewMode.type === 'position') return viewMode.position.name;
+    if (viewMode.type === 'watchlist') return viewMode.item.name;
+    if (viewMode.type === 'forex') return viewMode.position.name;
+    return 'BRNT';
   }, [viewMode]);
 
   // Fetch stock data for the active symbol
   const { quote, chart, loading: stockLoading, error: stockError, refetch } = useStockData(activeSymbol, timeRange);
 
-  // Fetch news for all position + watchlist symbols
+  // Fetch news for all position + watchlist + forex symbols
   const newsSymbols = useMemo(
     () => [
       ...positions.map((p) => p.yahooSymbol),
       ...watchlistItems.map((w) => w.yahooSymbol),
+      ...forexPositions.map((f) => f.yahooSymbol),
     ],
-    [positions, watchlistItems]
+    [positions, watchlistItems, forexPositions]
   );
   const { news, loading: newsLoading } = useNews(newsSymbols);
 
@@ -119,7 +128,6 @@ export default function Home() {
   const handleRemoveFromWatchlist = useCallback((id: string) => {
     removeFromWatchlist(id);
     setWatchlistItems(getWatchlist());
-    // If we were viewing the removed item, switch back to first position
     if (viewMode?.type === 'watchlist') {
       const remaining = getWatchlist();
       const wasRemoved = !remaining.find(w => w.id === id);
@@ -132,8 +140,14 @@ export default function Home() {
   // Handle clicking a watchlist item to view its chart
   const handleWatchlistSelect = useCallback((item: WatchlistItem) => {
     setViewMode({ type: 'watchlist', item });
-    setTimeRange('1mo'); // Reset to 1 month view
-    // Scroll to top to see the chart
+    setTimeRange('1mo');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  // Handle clicking a forex position to view its chart
+  const handleForexSelect = useCallback((pos: ForexPosition) => {
+    setViewMode({ type: 'forex', position: pos });
+    setTimeRange('3mo');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
@@ -149,11 +163,19 @@ export default function Home() {
 
   // Determine the currently selected position (if viewing a position)
   const selectedPosition = viewMode?.type === 'position' ? viewMode.position : null;
+  const selectedForex = viewMode?.type === 'forex' ? viewMode.position : null;
 
   // Currency for header display
   const headerCurrency = viewMode?.type === 'position'
     ? viewMode.position.currency
     : quote?.currency;
+
+  // Viewing context label
+  const viewingLabel = useMemo(() => {
+    if (viewMode?.type === 'watchlist') return { label: 'Viewing watchlist item:', name: viewMode.item.symbol, detail: viewMode.item.name };
+    if (viewMode?.type === 'forex') return { label: 'Viewing forex position:', name: viewMode.position.symbol, detail: viewMode.position.name };
+    return null;
+  }, [viewMode]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -172,11 +194,13 @@ export default function Home() {
         {/* Hero Banner */}
         <HeroBanner
           positionCount={positions.length}
+          forexCount={forexPositions.length}
+          watchlistCount={watchlistItems.length}
           onAddPosition={() => setAddDialogOpen(true)}
         />
 
-        {/* Viewing indicator when watching a watchlist item */}
-        {viewMode?.type === 'watchlist' && (
+        {/* Viewing indicator when watching a non-position item */}
+        {viewingLabel && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -184,13 +208,13 @@ export default function Home() {
           >
             <div className="flex items-center gap-2">
               <span className="text-xs text-primary font-medium">
-                Viewing watchlist item:
+                {viewingLabel.label}
               </span>
               <span className="font-display font-bold text-sm text-foreground">
-                {viewMode.item.symbol}
+                {viewingLabel.name}
               </span>
               <span className="text-xs text-muted-foreground">
-                {viewMode.item.name}
+                {viewingLabel.detail}
               </span>
             </div>
             <button
@@ -202,7 +226,7 @@ export default function Home() {
           </motion.div>
         )}
 
-        {/* Position Tabs (if multiple positions) */}
+        {/* Position Tabs */}
         {positions.length > 0 && (
           <div className="flex items-center gap-2 overflow-x-auto pb-1">
             {positions.map((pos) => (
@@ -222,7 +246,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Chart + Position/Detail Grid */}
+        {/* Chart + Detail Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {/* Price Chart — 2/3 width */}
           <div className="lg:col-span-2">
@@ -239,6 +263,7 @@ export default function Home() {
 
           {/* Detail Card — 1/3 width */}
           <div className="lg:col-span-1">
+            {/* Stock/Commodity Position Card */}
             {selectedPosition && (
               <PositionCard
                 position={selectedPosition}
@@ -246,6 +271,17 @@ export default function Home() {
                 loading={stockLoading}
               />
             )}
+
+            {/* Forex Position Card */}
+            {selectedForex && (
+              <ForexCard
+                position={selectedForex}
+                quote={quote}
+                loading={stockLoading}
+              />
+            )}
+
+            {/* Watchlist Detail Card */}
             {viewMode?.type === 'watchlist' && quote && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -257,7 +293,7 @@ export default function Home() {
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-lg">
-                        {viewMode.item.category === 'commodity' ? '🏆' : '📊'}
+                        {viewMode.item.category === 'commodity' ? '🏆' : viewMode.item.category === 'forex' ? '💱' : '📊'}
                       </span>
                       <div>
                         <h3 className="font-display text-base font-semibold leading-none">
@@ -321,7 +357,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Watchlist badge */}
                 <div className="flex items-center justify-center">
                   <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 bg-secondary/30 px-3 py-1 rounded-full">
                     Watchlist Item — Not in Portfolio
@@ -348,6 +383,15 @@ export default function Home() {
             previousClose={quote.previousClose}
             currency={quote.currency}
             exchange={quote.exchange}
+          />
+        )}
+
+        {/* Forex Positions Section */}
+        {forexPositions.length > 0 && (
+          <ForexSummary
+            positions={forexPositions}
+            onSelectPosition={handleForexSelect}
+            selectedPositionId={selectedForex?.id}
           />
         )}
 

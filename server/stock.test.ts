@@ -12,8 +12,15 @@ vi.mock("./_core/llm", () => ({
   invokeLLM: vi.fn(),
 }));
 
+// Mock the Yahoo fallback to prevent real HTTP calls and timeouts
+vi.mock("./yahooFallback", () => ({
+  fetchYahooChart: vi.fn().mockResolvedValue(null),
+  fetchYahooNews: vi.fn().mockResolvedValue(null),
+}));
+
 import { callDataApi } from "./_core/dataApi";
 import { invokeLLM } from "./_core/llm";
+import { cacheClear } from "./cache";
 const mockedCallDataApi = vi.mocked(callDataApi);
 const mockedInvokeLLM = vi.mocked(invokeLLM);
 
@@ -101,6 +108,7 @@ const MOCK_INSIGHTS_RESPONSE = {
 describe("stock.getChart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheClear();
   });
 
   it("returns chart data for a valid symbol", async () => {
@@ -170,6 +178,7 @@ describe("stock.getChart", () => {
 describe("stock.getInsights", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheClear();
   });
 
   it("returns insights data for a valid symbol", async () => {
@@ -206,6 +215,7 @@ describe("stock.getInsights", () => {
 describe("stock.getChart for watchlist symbols", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheClear();
   });
 
   const MOCK_GOLD_RESPONSE = {
@@ -402,6 +412,7 @@ describe("stock.getChart for watchlist symbols", () => {
 describe("stock.getAnalysis", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheClear();
   });
 
   const MOCK_ANALYSIS_INPUT = {

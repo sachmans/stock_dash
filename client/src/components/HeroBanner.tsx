@@ -2,21 +2,25 @@
  * Stock Portfolio Tracker — Hero Banner Component
  * Design: Dark Command Center
  * 
- * Displays a visually striking hero section with the oil commodity image
- * and key portfolio headline.
+ * Displays a visually striking hero section with a generic financial
+ * portfolio theme (not oil-specific).
  */
 
 import { motion } from 'framer-motion';
 
-const HERO_BG = 'https://d2xsxph8kpxj0f.cloudfront.net/109756376/ZPbk3R8RpqEj7mYeyZ8LwY/hero-bg-QM8CNq2ESAXausF2dWUvoa.webp';
-const OIL_IMG = 'https://d2xsxph8kpxj0f.cloudfront.net/109756376/ZPbk3R8RpqEj7mYeyZ8LwY/oil-commodity-6ofTCKVd24aBdxL6wDrDbg.webp';
+const HERO_BG = 'https://d2xsxph8kpxj0f.cloudfront.net/109756376/ZPbk3R8RpqEj7mYeyZ8LwY/hero-generic-Uuf3xDX5NF3cB7yPGT8ySw.webp';
+const PORTFOLIO_ICON = 'https://d2xsxph8kpxj0f.cloudfront.net/109756376/ZPbk3R8RpqEj7mYeyZ8LwY/portfolio-icon-fww2myZXRNqf32X3sdszwm.webp';
 
 interface HeroBannerProps {
   positionCount: number;
+  forexCount: number;
+  watchlistCount: number;
   onAddPosition: () => void;
 }
 
-export default function HeroBanner({ positionCount, onAddPosition }: HeroBannerProps) {
+export default function HeroBanner({ positionCount, forexCount, watchlistCount, onAddPosition }: HeroBannerProps) {
+  const totalAssets = positionCount + forexCount;
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -35,7 +39,7 @@ export default function HeroBanner({ positionCount, onAddPosition }: HeroBannerP
       {/* Content */}
       <div className="relative z-10 h-full flex items-center px-6 sm:px-8">
         <div className="flex items-center gap-6 w-full">
-          {/* Oil Image Thumbnail */}
+          {/* Portfolio Icon Thumbnail */}
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -44,8 +48,8 @@ export default function HeroBanner({ positionCount, onAddPosition }: HeroBannerP
           >
             <div className="h-24 w-24 rounded-xl overflow-hidden border-2 border-border/30 shadow-xl">
               <img
-                src={OIL_IMG}
-                alt="Brent Crude Oil"
+                src={PORTFOLIO_ICON}
+                alt="Portfolio"
                 className="h-full w-full object-cover"
               />
             </div>
@@ -59,7 +63,7 @@ export default function HeroBanner({ positionCount, onAddPosition }: HeroBannerP
               transition={{ duration: 0.4, delay: 0.1 }}
               className="text-xs text-primary font-medium uppercase tracking-widest mb-1"
             >
-              Commodity Portfolio
+              Multi-Asset Portfolio
             </motion.p>
             <motion.h2
               initial={{ opacity: 0, y: 10 }}
@@ -67,16 +71,27 @@ export default function HeroBanner({ positionCount, onAddPosition }: HeroBannerP
               transition={{ duration: 0.4, delay: 0.2 }}
               className="font-display text-2xl sm:text-3xl font-bold text-foreground leading-tight"
             >
-              Brent Crude Oil Tracker
+              Portfolio Command Center
             </motion.h2>
-            <motion.p
+            <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.3 }}
-              className="text-sm text-muted-foreground mt-1"
+              className="flex items-center gap-3 mt-2"
             >
-              Tracking {positionCount} active position{positionCount !== 1 ? 's' : ''} with live market data
-            </motion.p>
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 rounded-full px-2.5 py-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                {positionCount} position{positionCount !== 1 ? 's' : ''}
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 rounded-full px-2.5 py-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+                {forexCount} forex trade{forexCount !== 1 ? 's' : ''}
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/50 rounded-full px-2.5 py-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />
+                {watchlistCount} watching
+              </span>
+            </motion.div>
           </div>
 
           {/* Add Position Button */}

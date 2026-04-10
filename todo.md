@@ -27,3 +27,24 @@
 - [x] Build StockAnalysis UI component with buy/sell confidence gauge
 - [x] Show analysis panel for both portfolio and watchlist items
 - [x] Write vitest tests for AI analysis feature
+- [x] Add forex position type to data model
+- [x] Add USD/CHF trade 1: 11 Feb 2026, bought USD 100k, sold CHF 76,750.10 @ 0.767501
+- [x] Add USD/CHF trade 2: 25 Mar 2026, bought USD 200k, sold CHF 158,150 @ 0.79075
+- [x] Fetch live USD/CHF exchange rate via Yahoo Finance (USDCHF=X)
+- [x] Build forex position card showing entry rate, current rate, P&L in both USD and CHF
+- [x] Integrate forex positions into the dashboard alongside BRNT
+- [x] Write vitest tests for forex positions
+- [ ] Push all code to sachmans/stock_dash GitHub repo
+- [x] Fix forex vitest tests (mock callDataApi properly)
+- [ ] Explore Core AI Backend API endpoints (ai.s9n.dxb-gw.basanti.ai)
+- [ ] Explore CognitionOS API endpoints (cognition.s9n.dxb-gw.basanti.ai)
+- [ ] Build integration to push portfolio/forex data to AI Backend
+- [ ] Build integration to push context to CognitionOS
+- [ ] Add Kora chat interface via git submodule for portfolio Q&A
+- [ ] Push all code to sachmans/stock_dash GitHub repo
+- [ ] Register new org on CognitionOS for stock tracker
+- [ ] Register app on AI Backend for stock tracker
+- [ ] Set up auth credentials for both services
+- [x] Fix data API quota exhaustion - add fallback or caching to prevent empty dashboard
+- [x] Make banner more generic (not oil-specific)
+- [x] Add position open dates to position cards (BRNT and forex)
