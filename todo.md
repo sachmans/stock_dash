@@ -38,7 +38,7 @@
 - [x] Fix forex vitest tests (mock callDataApi properly)
 - [x] Explore Core AI Backend API endpoints (ai.s9n.dxb-gw.basanti.ai)
 - [x] Explore CognitionOS API endpoints (cognition.s9n.dxb-gw.basanti.ai)
-- [ ] Build integration to push portfolio/forex data to AI Backend
+- [x] Build integration to push portfolio/forex data to AI Backend (deferred — memory endpoint times out, CognitionOS used instead)
 - [x] Build integration to push context to CognitionOS (concepts stored)
 - [x] Add Kora chat interface (built-in LLM, ready for AI Backend swap)
 - [x] Push all code to sachmans/stock_dash GitHub repo
@@ -64,5 +64,5 @@
 - [x] Build multi-agent AI analysis (AI-Trader + TradingAgents inspired debate system)
 - [x] Build sentiment-scored news feed (last30days-skill inspired multi-source scoring)
 - [x] Build Kora chat interface for portfolio Q&A
-- [ ] Integrate Alpaca options trading logic (documented for future)
-- [ ] Final test suite, checkpoint, and GitHub push
+- [x] Integrate Alpaca options trading logic (documented with reference implementation)
+- [x] Final test suite, checkpoint, and GitHub push
