@@ -66,3 +66,32 @@
 - [x] Build Kora chat interface for portfolio Q&A
 - [x] Integrate Alpaca options trading logic (documented with reference implementation)
 - [x] Final test suite, checkpoint, and GitHub push
+## V2: Core AI Backend + CognitionOS + PostgreSQL
+
+### Core AI Backend Integration (replace Manus Forge LLM)
+- [x] Create server/lib/coreAiBackend.ts — adapter for Core AI Backend chat/completions API
+- [x] Create server/lib/cognitionOS.ts — adapter for CognitionOS knowledge graph queries
+- [x] Create server/lib/aiProvider.ts — unified AI provider that routes to Core AI Backend (primary) with Manus Forge LLM fallback
+- [x] Wire multi-agent analysis (multiAgentAnalysis.ts) to use aiProvider instead of direct invokeLLM
+- [x] Wire sentiment news scoring (sentimentNews.ts) to use aiProvider instead of direct invokeLLM
+- [x] Wire Kora chat (routers.ts koraChat) to use aiProvider with CognitionOS context enrichment
+- [x] Wire single-agent analysis (routers.ts getAnalysis) to use aiProvider
+- [x] Add CognitionOS knowledge graph context injection into AI analysis prompts
+- [x] Add portfolio concept sync to CognitionOS on position/watchlist changes
+- [x] Add environment variables: CORE_AI_BACKEND_URL, CORE_AI_BACKEND_API_KEY, COGNITION_OS_URL, COGNITION_OS_TENANT_ID
+
+### PostgreSQL Database Support
+- [x] Install pg and @types/pg packages
+- [x] Create drizzle/schema-pg.ts with PostgreSQL-compatible schema (pgTable, pgEnum, serial)
+- [x] Create server/db-pg.ts with PostgreSQL Drizzle adapter (merged into db.ts with auto-detect)
+- [x] Update server/db.ts to auto-detect dialect from DATABASE_URL (mysql:// vs postgres://)
+- [x] Update drizzle.config.ts to support dialect switching based on DATABASE_URL
+- [x] Add DB_DIALECT env var option for explicit dialect selection
+- [x] Test PostgreSQL upsert (ON CONFLICT DO UPDATE vs ON DUPLICATE KEY UPDATE)
+
+### Tests
+- [x] Write tests for Core AI Backend adapter (mock HTTP calls)
+- [x] Write tests for CognitionOS adapter (mock HTTP calls)
+- [x] Write tests for aiProvider fallback logic
+- [x] Write tests for PostgreSQL db adapter (dialect detection tests)
+- [x] Verify all 48 tests pass (14 stock + 1 auth + 7 core AI + 8 cognitionOS + 2 aiProvider + 6 db dialect + 10 existing)

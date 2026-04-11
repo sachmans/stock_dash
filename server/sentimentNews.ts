@@ -4,9 +4,12 @@
  * 
  * Aggregates news from multiple sources and scores each article
  * with AI-powered sentiment analysis (bullish/bearish/neutral + score).
+ * 
+ * Now uses the unified AI Provider (Core AI Backend → Manus Forge fallback)
+ * with CognitionOS knowledge graph enrichment.
  */
 
-import { invokeLLM } from "./_core/llm";
+import { aiComplete } from './lib/aiProvider';
 
 /* ─── Types ─── */
 
@@ -37,7 +40,7 @@ export interface NewsSentimentSummary {
   highImpactCount: number;
 }
 
-/* ─── Sentiment Analysis via LLM ─── */
+/* ─── Sentiment Analysis via AI Provider ─── */
 
 const SENTIMENT_RESPONSE_FORMAT = {
   type: "json_schema" as const,
@@ -89,7 +92,7 @@ const SENTIMENT_RESPONSE_FORMAT = {
 };
 
 /**
- * Score a batch of news articles for sentiment using LLM.
+ * Score a batch of news articles for sentiment using the AI Provider.
  */
 export async function scoreNewsSentiment(
   articles: Array<{ title: string; summary: string; source: string }>,
@@ -109,7 +112,7 @@ export async function scoreNewsSentiment(
       .map((a, i) => `[${i}] "${a.title}" — ${a.summary || 'No summary'} (Source: ${a.source})`)
       .join('\n');
 
-    const response = await invokeLLM({
+    const response = await aiComplete({
       messages: [
         {
           role: "system",
@@ -124,12 +127,13 @@ Be precise — a general market article with no direct relevance should be NEUTR
         },
       ],
       response_format: SENTIMENT_RESPONSE_FORMAT,
+      enrichWithKnowledgeGraph: {
+        symbol,
+        additionalTerms: [instrumentName],
+      },
     });
 
-    const content = response?.choices?.[0]?.message?.content;
-    if (!content) return articles.map(() => defaultSentiment());
-
-    const parsed = JSON.parse(content as string);
+    const parsed = JSON.parse(response.content);
     if (!Array.isArray(parsed.articles)) return articles.map(() => defaultSentiment());
 
     // Map results back to article indices

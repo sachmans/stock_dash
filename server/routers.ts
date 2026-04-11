@@ -3,12 +3,13 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { callDataApi } from "./_core/dataApi";
-import { invokeLLM } from "./_core/llm";
 import { cacheGet, cacheSet, CACHE_TTL } from "./cache";
 import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
 import { computeIndicators, generateDailyAnalysis, calcSMA } from "./dataEngine";
 import { runMultiAgentAnalysis } from "./multiAgentAnalysis";
 import { scoreNewsSentiment, calculateSentimentSummary } from "./sentimentNews";
+import { aiComplete, getProviderStatus } from "./lib/aiProvider";
+import { syncPortfolioConcept, syncWatchlistConcept } from "./lib/cognitionOS";
 import { z } from "zod";
 
 /** Track whether the Data API quota is exhausted so we skip it quickly */
@@ -163,7 +164,8 @@ export const appRouter = router({
       }),
 
     /**
-     * Single-agent AI analysis (original, fast).
+     * Single-agent AI analysis — now via unified AI Provider
+     * (Core AI Backend → Manus Forge fallback) with CognitionOS enrichment.
      */
     getAnalysis: publicProcedure
       .input(z.object({
@@ -203,7 +205,7 @@ ${input.previousClose ? `- Previous Close: ${input.previousClose.toFixed(3)}` : 
 
 Provide your analysis as JSON with these exact fields.`;
 
-          const response = await invokeLLM({
+          const response = await aiComplete({
             messages: [
               { role: "system", content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON. Include specific price levels." },
               { role: "user", content: prompt },
@@ -239,12 +241,13 @@ Provide your analysis as JSON with these exact fields.`;
                 },
               },
             },
+            enrichWithKnowledgeGraph: {
+              symbol: input.symbol,
+              additionalTerms: [input.name],
+            },
           });
 
-          const content = response.choices[0]?.message?.content;
-          if (!content || typeof content !== 'string') return null;
-
-          const analysis = JSON.parse(content);
+          const analysis = JSON.parse(response.content);
           const VALID_RECS = ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL'];
           const VALID_RISKS = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
 
@@ -265,6 +268,7 @@ Provide your analysis as JSON with these exact fields.`;
               : ['No catalysts identified'],
             analyzedAt: Date.now(),
             symbol: input.symbol,
+            aiProvider: response.provider,
           };
 
           cacheSet(cacheKey, result, CACHE_TTL.ANALYSIS);
@@ -277,7 +281,7 @@ Provide your analysis as JSON with these exact fields.`;
 
     /**
      * Multi-Agent AI Analysis — 4 specialist agents + moderator.
-     * Inspired by AI-Trader and TradingAgents-CN.
+     * Now uses unified AI Provider with CognitionOS enrichment.
      */
     getMultiAgentAnalysis: publicProcedure
       .input(z.object({
@@ -315,7 +319,6 @@ Provide your analysis as JSON with these exact fields.`;
 
     /**
      * Technical indicators computed from chart data.
-     * Inspired by OpenBB and daily_stock_analysis.
      */
     getTechnicalIndicators: publicProcedure
       .input(z.object({
@@ -338,7 +341,6 @@ Provide your analysis as JSON with these exact fields.`;
           input.currentPrice,
         );
 
-        // Helper to get last non-null value from an array
         const lastVal = (arr: (number | null)[]): number => {
           for (let i = arr.length - 1; i >= 0; i--) {
             if (arr[i] !== null && arr[i] !== undefined) return arr[i] as number;
@@ -346,7 +348,6 @@ Provide your analysis as JSON with these exact fields.`;
           return NaN;
         };
 
-        // Extract latest scalar values for the UI gauges
         const indicators = {
           rsi14: lastVal(rawIndicators.rsi14),
           sma10: lastVal(calcSMA(input.closes, 10)),
@@ -370,8 +371,7 @@ Provide your analysis as JSON with these exact fields.`;
       }),
 
     /**
-     * Sentiment-scored news analysis.
-     * Inspired by last30days-skill.
+     * Sentiment-scored news analysis — via unified AI Provider.
      */
     getSentimentNews: publicProcedure
       .input(z.object({
@@ -425,6 +425,7 @@ Provide your analysis as JSON with these exact fields.`;
 
     /**
      * Kora Chat — AI portfolio assistant.
+     * Now uses unified AI Provider with CognitionOS knowledge graph enrichment.
      */
     koraChat: publicProcedure
       .input(z.object({
@@ -440,7 +441,7 @@ Provide your analysis as JSON with these exact fields.`;
           const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
             {
               role: 'system',
-              content: `You are Kora, an expert AI portfolio assistant. You have deep knowledge of financial markets, trading strategies, technical analysis, and risk management.
+              content: `You are Kora, an expert AI portfolio assistant powered by the SeKondBrain AI Backend and CognitionOS knowledge graph. You have deep knowledge of financial markets, trading strategies, technical analysis, and risk management.
 
 CURRENT PORTFOLIO CONTEXT:
 ${input.portfolioContext}
@@ -465,13 +466,71 @@ Rules:
 
           messages.push({ role: 'user', content: input.message });
 
-          const response = await invokeLLM({ messages });
-          const reply = response?.choices?.[0]?.message?.content;
+          const response = await aiComplete({
+            messages,
+            enrichWithKnowledgeGraph: {
+              symbol: 'portfolio',
+              additionalTerms: ['BRNT', 'USD/CHF', 'trading'],
+            },
+          });
 
-          return { reply: typeof reply === 'string' ? reply : 'I was unable to generate a response. Please try again.' };
+          return {
+            reply: response.content || 'I was unable to generate a response. Please try again.',
+            aiProvider: response.provider,
+          };
         } catch (err) {
           console.error('[Kora Chat] Error:', err);
           return { reply: 'I encountered an error. Please try again in a moment.' };
+        }
+      }),
+
+    /**
+     * Get AI provider status — shows which backends are configured and healthy.
+     */
+    getAiProviderStatus: publicProcedure.query(() => {
+      return getProviderStatus();
+    }),
+
+    /**
+     * Sync a portfolio position to CognitionOS knowledge graph.
+     */
+    syncToCognitionOS: publicProcedure
+      .input(z.object({
+        symbol: z.string(),
+        name: z.string(),
+        quantity: z.number(),
+        entryPrice: z.number(),
+        currentPrice: z.number().optional(),
+        exchange: z.string().optional(),
+        type: z.enum(['equity', 'forex', 'commodity', 'etf']),
+        openedDate: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const conceptId = await syncPortfolioConcept(input);
+          return { success: !!conceptId, conceptId };
+        } catch (err) {
+          console.error('[CognitionOS] Sync failed:', err);
+          return { success: false, conceptId: null };
+        }
+      }),
+
+    /**
+     * Sync a watchlist item to CognitionOS knowledge graph.
+     */
+    syncWatchlistToCognitionOS: publicProcedure
+      .input(z.object({
+        symbol: z.string(),
+        name: z.string(),
+        currentPrice: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const conceptId = await syncWatchlistConcept(input);
+          return { success: !!conceptId, conceptId };
+        } catch (err) {
+          console.error('[CognitionOS] Watchlist sync failed:', err);
+          return { success: false, conceptId: null };
         }
       }),
   }),
