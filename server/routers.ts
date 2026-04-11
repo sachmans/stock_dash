@@ -6,6 +6,9 @@ import { callDataApi } from "./_core/dataApi";
 import { invokeLLM } from "./_core/llm";
 import { cacheGet, cacheSet, CACHE_TTL } from "./cache";
 import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
+import { computeIndicators, generateDailyAnalysis, calcSMA } from "./dataEngine";
+import { runMultiAgentAnalysis } from "./multiAgentAnalysis";
+import { scoreNewsSentiment, calculateSentimentSummary } from "./sentimentNews";
 import { z } from "zod";
 
 /** Track whether the Data API quota is exhausted so we skip it quickly */
@@ -57,13 +60,9 @@ export const appRouter = router({
         const cacheKey = `chart:${input.symbol}:${input.range}:${input.interval}`;
         const ttl = input.range === '1d' ? CACHE_TTL.CHART_1D : CACHE_TTL.CHART_DEFAULT;
 
-        // Check cache first
         const cached = cacheGet<unknown>(cacheKey);
-        if (cached) {
-          return cached;
-        }
+        if (cached) return cached;
 
-        // Try Data API first (if not exhausted)
         if (isDataApiAvailable()) {
           try {
             const data = await callDataApi("YahooFinance/get_stock_chart", {
@@ -75,10 +74,8 @@ export const appRouter = router({
                 includeAdjustedClose: 'true',
               },
             }) as any;
-            // Check for rate limit message in response
             if (data?.message && String(data.message).includes('rate limit')) {
               console.warn(`[Stock API] Data API rate limited for ${input.symbol}`);
-              // Fall through to Yahoo fallback
             } else if (data) {
               cacheSet(cacheKey, data, ttl);
               return data;
@@ -93,7 +90,6 @@ export const appRouter = router({
           }
         }
 
-        // Fallback: Direct Yahoo Finance
         try {
           const yahooData = await fetchYahooChart(input.symbol, input.range, input.interval);
           if (yahooData) {
@@ -117,13 +113,9 @@ export const appRouter = router({
       .query(async ({ input }) => {
         const cacheKey = `insights:${input.symbol}`;
 
-        // Check cache first
         const cached = cacheGet<unknown>(cacheKey);
-        if (cached) {
-          return cached;
-        }
+        if (cached) return cached;
 
-        // Try Data API first
         if (isDataApiAvailable()) {
           try {
             const data = await callDataApi("YahooFinance/get_stock_insights", {
@@ -141,7 +133,6 @@ export const appRouter = router({
           }
         }
 
-        // Fallback: Yahoo RSS news
         try {
           const newsItems = await fetchYahooNews(input.symbol);
           if (newsItems.length > 0) {
@@ -172,7 +163,7 @@ export const appRouter = router({
       }),
 
     /**
-     * AI-powered stock analysis using LLM with caching.
+     * Single-agent AI analysis (original, fast).
      */
     getAnalysis: publicProcedure
       .input(z.object({
@@ -192,12 +183,8 @@ export const appRouter = router({
       }))
       .query(async ({ input }) => {
         const cacheKey = `analysis:${input.symbol}`;
-
-        // Check cache first (30 min TTL)
         const cached = cacheGet<unknown>(cacheKey);
-        if (cached) {
-          return cached;
-        }
+        if (cached) return cached;
 
         try {
           const prompt = `You are a senior financial analyst AI. Analyze the following instrument and provide a structured investment analysis.
@@ -214,18 +201,12 @@ ${input.volume ? `- Volume: ${input.volume.toLocaleString()}` : ''}
 ${input.previousClose ? `- Previous Close: ${input.previousClose.toFixed(3)}` : ''}
 - Exchange: ${input.exchange || 'Unknown'}
 
-Provide your analysis as JSON with these exact fields. Be specific and actionable.`;
+Provide your analysis as JSON with these exact fields.`;
 
           const response = await invokeLLM({
             messages: [
-              {
-                role: "system",
-                content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON matching the requested schema. Include specific price levels and percentages in your analysis. Your confidence should reflect the strength of the technical and fundamental signals available."
-              },
-              {
-                role: "user",
-                content: prompt,
-              },
+              { role: "system", content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON. Include specific price levels." },
+              { role: "user", content: prompt },
             ],
             response_format: {
               type: "json_schema",
@@ -235,50 +216,25 @@ Provide your analysis as JSON with these exact fields. Be specific and actionabl
                 schema: {
                   type: "object",
                   properties: {
-                    recommendation: {
-                      type: "string",
-                      description: "One of: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL",
-                    },
-                    confidence: {
-                      type: "number",
-                      description: "Confidence score from 0 to 100",
-                    },
-                    summary: {
-                      type: "string",
-                      description: "2-3 sentence executive summary of the analysis",
-                    },
-                    bullCase: {
-                      type: "string",
-                      description: "Key bullish argument in 1-2 sentences",
-                    },
-                    bearCase: {
-                      type: "string",
-                      description: "Key bearish argument in 1-2 sentences",
-                    },
+                    recommendation: { type: "string", description: "STRONG_BUY, BUY, HOLD, SELL, or STRONG_SELL" },
+                    confidence: { type: "number", description: "0-100" },
+                    summary: { type: "string", description: "2-3 sentence executive summary" },
+                    bullCase: { type: "string", description: "Key bullish argument" },
+                    bearCase: { type: "string", description: "Key bearish argument" },
                     keyLevels: {
                       type: "object",
                       properties: {
-                        support: { type: "number", description: "Nearest support price level" },
-                        resistance: { type: "number", description: "Nearest resistance price level" },
-                        target: { type: "number", description: "Price target for the next 1-3 months" },
+                        support: { type: "number" },
+                        resistance: { type: "number" },
+                        target: { type: "number" },
                       },
                       required: ["support", "resistance", "target"],
                       additionalProperties: false,
                     },
-                    riskLevel: {
-                      type: "string",
-                      description: "One of: LOW, MEDIUM, HIGH, VERY_HIGH",
-                    },
-                    catalysts: {
-                      type: "array",
-                      items: { type: "string" },
-                      description: "2-3 upcoming catalysts or factors to watch",
-                    },
+                    riskLevel: { type: "string", description: "LOW, MEDIUM, HIGH, or VERY_HIGH" },
+                    catalysts: { type: "array", items: { type: "string" }, description: "2-3 catalysts" },
                   },
-                  required: [
-                    "recommendation", "confidence", "summary", "bullCase",
-                    "bearCase", "keyLevels", "riskLevel", "catalysts",
-                  ],
+                  required: ["recommendation", "confidence", "summary", "bullCase", "bearCase", "keyLevels", "riskLevel", "catalysts"],
                   additionalProperties: false,
                 },
               },
@@ -286,13 +242,9 @@ Provide your analysis as JSON with these exact fields. Be specific and actionabl
           });
 
           const content = response.choices[0]?.message?.content;
-          if (!content || typeof content !== 'string') {
-            return null;
-          }
+          if (!content || typeof content !== 'string') return null;
 
           const analysis = JSON.parse(content);
-
-          // Validate and sanitize LLM output
           const VALID_RECS = ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL'];
           const VALID_RISKS = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
 
@@ -320,6 +272,206 @@ Provide your analysis as JSON with these exact fields. Be specific and actionabl
         } catch (err) {
           console.error("[Stock API] Analysis error:", err);
           return null;
+        }
+      }),
+
+    /**
+     * Multi-Agent AI Analysis — 4 specialist agents + moderator.
+     * Inspired by AI-Trader and TradingAgents-CN.
+     */
+    getMultiAgentAnalysis: publicProcedure
+      .input(z.object({
+        symbol: z.string(),
+        name: z.string(),
+        price: z.number(),
+        change: z.number(),
+        changePercent: z.number(),
+        dayHigh: z.number(),
+        dayLow: z.number(),
+        fiftyTwoWeekHigh: z.number().optional(),
+        fiftyTwoWeekLow: z.number().optional(),
+        volume: z.number().optional(),
+        previousClose: z.number().optional(),
+        currency: z.string().optional(),
+        exchange: z.string().optional(),
+        technicalSignals: z.array(z.string()).optional(),
+        dailyTrend: z.string().optional(),
+        dailyStrength: z.number().optional(),
+      }))
+      .query(async ({ input }) => {
+        const cacheKey = `multiagent:${input.symbol}`;
+        const cached = cacheGet<unknown>(cacheKey);
+        if (cached) return cached;
+
+        try {
+          const result = await runMultiAgentAnalysis(input);
+          cacheSet(cacheKey, result, CACHE_TTL.ANALYSIS);
+          return result;
+        } catch (err) {
+          console.error("[Stock API] Multi-agent analysis error:", err);
+          return null;
+        }
+      }),
+
+    /**
+     * Technical indicators computed from chart data.
+     * Inspired by OpenBB and daily_stock_analysis.
+     */
+    getTechnicalIndicators: publicProcedure
+      .input(z.object({
+        symbol: z.string(),
+        closes: z.array(z.number()),
+        highs: z.array(z.number()),
+        lows: z.array(z.number()),
+        currentPrice: z.number(),
+      }))
+      .query(({ input }) => {
+        const cacheKey = `indicators:${input.symbol}:${input.closes.length}`;
+        const cached = cacheGet<unknown>(cacheKey);
+        if (cached) return cached;
+
+        const rawIndicators = computeIndicators(input.closes);
+        const dailyAnalysis = generateDailyAnalysis(
+          input.closes,
+          input.highs,
+          input.lows,
+          input.currentPrice,
+        );
+
+        // Helper to get last non-null value from an array
+        const lastVal = (arr: (number | null)[]): number => {
+          for (let i = arr.length - 1; i >= 0; i--) {
+            if (arr[i] !== null && arr[i] !== undefined) return arr[i] as number;
+          }
+          return NaN;
+        };
+
+        // Extract latest scalar values for the UI gauges
+        const indicators = {
+          rsi14: lastVal(rawIndicators.rsi14),
+          sma10: lastVal(calcSMA(input.closes, 10)),
+          sma20: lastVal(rawIndicators.sma20),
+          sma50: lastVal(rawIndicators.sma50),
+          macd: {
+            macd: lastVal(rawIndicators.macd.macd),
+            signal: lastVal(rawIndicators.macd.signal),
+            histogram: lastVal(rawIndicators.macd.histogram),
+          },
+          bollingerBands: {
+            upper: lastVal(rawIndicators.bollingerBands.upper),
+            middle: lastVal(rawIndicators.bollingerBands.middle),
+            lower: lastVal(rawIndicators.bollingerBands.lower),
+          },
+        };
+
+        const result = { indicators, dailyAnalysis };
+        cacheSet(cacheKey, result, CACHE_TTL.CHART_DEFAULT);
+        return result;
+      }),
+
+    /**
+     * Sentiment-scored news analysis.
+     * Inspired by last30days-skill.
+     */
+    getSentimentNews: publicProcedure
+      .input(z.object({
+        symbol: z.string(),
+        instrumentName: z.string(),
+        articles: z.array(z.object({
+          title: z.string(),
+          summary: z.string(),
+          source: z.string(),
+        })),
+      }))
+      .query(async ({ input }) => {
+        const cacheKey = `sentiment:${input.symbol}:${input.articles.length}`;
+        const cached = cacheGet<unknown>(cacheKey);
+        if (cached) return cached;
+
+        const scores = await scoreNewsSentiment(
+          input.articles,
+          input.symbol,
+          input.instrumentName,
+        );
+
+        const scoredArticles = input.articles.map((article, i) => ({
+          ...article,
+          ...scores[i],
+        }));
+
+        const summary = calculateSentimentSummary(
+          scoredArticles.map((a, i) => ({
+            id: `scored-${i}`,
+            title: a.title,
+            summary: a.summary,
+            source: a.source,
+            url: '#',
+            publishedAt: new Date().toISOString(),
+            relatedSymbols: [input.symbol],
+            sentiment: {
+              label: a.sentiment,
+              score: a.score,
+              confidence: a.confidence,
+            },
+            impact: a.impact,
+            category: a.category,
+          })),
+        );
+
+        const result = { articles: scoredArticles, summary };
+        cacheSet(cacheKey, result, CACHE_TTL.INSIGHTS);
+        return result;
+      }),
+
+    /**
+     * Kora Chat — AI portfolio assistant.
+     */
+    koraChat: publicProcedure
+      .input(z.object({
+        message: z.string(),
+        portfolioContext: z.string(),
+        history: z.array(z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string(),
+        })).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+            {
+              role: 'system',
+              content: `You are Kora, an expert AI portfolio assistant. You have deep knowledge of financial markets, trading strategies, technical analysis, and risk management.
+
+CURRENT PORTFOLIO CONTEXT:
+${input.portfolioContext}
+
+Rules:
+- Be concise but thorough (2-4 paragraphs max)
+- Reference specific positions and numbers from the portfolio
+- Provide actionable insights, not generic advice
+- When discussing risk, quantify it (e.g., "your USD/CHF exposure is $300k")
+- Use professional financial language
+- If asked about something outside your data, say so honestly
+- Format key numbers and percentages clearly`,
+            },
+          ];
+
+          // Add conversation history
+          if (input.history && input.history.length > 0) {
+            for (const msg of input.history.slice(-8)) {
+              messages.push({ role: msg.role, content: msg.content });
+            }
+          }
+
+          messages.push({ role: 'user', content: input.message });
+
+          const response = await invokeLLM({ messages });
+          const reply = response?.choices?.[0]?.message?.content;
+
+          return { reply: typeof reply === 'string' ? reply : 'I was unable to generate a response. Please try again.' };
+        } catch (err) {
+          console.error('[Kora Chat] Error:', err);
+          return { reply: 'I encountered an error. Please try again in a moment.' };
         }
       }),
   }),

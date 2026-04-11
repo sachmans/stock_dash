@@ -1,16 +1,19 @@
 /**
  * Stock Portfolio Tracker — Home Page
- * Design: Dark Command Center
+ * Design: Dark Command Center — Super System
  * 
  * Main dashboard page assembling all components:
  * - Header with portfolio summary
  * - Hero banner
  * - Price chart (2/3 width) + Position/Watchlist/Forex detail card (1/3 width)
- * - AI Analysis panel
+ * - Technical Indicators panel
+ * - Multi-Agent AI Analysis panel
+ * - AI Analysis panel (single agent)
  * - Forex Positions section
  * - Market stats strip
  * - Watchlist (clickable to switch chart view)
- * - News feed
+ * - Sentiment-scored News Feed
+ * - Kora Chat (floating AI assistant)
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -28,6 +31,10 @@ import AddToWatchlistDialog from '@/components/AddToWatchlistDialog';
 import NewsFeed from '@/components/NewsFeed';
 import AddPositionDialog from '@/components/AddPositionDialog';
 import StockAnalysis from '@/components/StockAnalysis';
+import MultiAgentPanel from '@/components/MultiAgentPanel';
+import TechnicalIndicators from '@/components/TechnicalIndicators';
+import SentimentNewsFeed from '@/components/SentimentNewsFeed';
+import KoraChat from '@/components/KoraChat';
 import { getPositions } from '@/lib/portfolio';
 import { getForexPositions } from '@/lib/forex';
 import { getWatchlist, addToWatchlist, removeFromWatchlist } from '@/lib/watchlist';
@@ -108,6 +115,50 @@ export default function Home() {
     const totalPnLPercent = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
     return { totalValue, totalCost, totalPnL, totalPnLPercent };
   }, [quote, viewMode]);
+
+  // Extract OHLC arrays from chart data for technical indicators
+  const chartArrays = useMemo(() => {
+    if (!chart || chart.length === 0) return { closes: [] as number[], highs: [] as number[], lows: [] as number[] };
+    return {
+      closes: chart.map((d: any) => d.close).filter((v: any): v is number => typeof v === 'number'),
+      highs: chart.map((d: any) => d.high).filter((v: any): v is number => typeof v === 'number'),
+      lows: chart.map((d: any) => d.low).filter((v: any): v is number => typeof v === 'number'),
+    };
+  }, [chart]);
+
+  // Build portfolio context string for Kora chat
+  const portfolioContext = useMemo(() => {
+    const parts: string[] = [];
+    
+    // Stock positions
+    positions.forEach(pos => {
+      const currentVal = quote && viewMode?.type === 'position' && viewMode.position.id === pos.id
+        ? quote.price * pos.quantity
+        : pos.avgPrice * pos.quantity;
+      parts.push(`Stock: ${pos.name} (${pos.symbol}) - ${pos.quantity} units @ ${pos.avgPrice}, current value ~$${currentVal.toFixed(2)}`);
+    });
+
+    // Forex positions
+    forexPositions.forEach(fx => {
+      parts.push(`Forex: ${fx.name} - Bought ${fx.boughtCurrency} ${fx.boughtAmount.toLocaleString()}, Sold ${fx.soldCurrency} ${fx.soldAmount.toLocaleString()} @ ${fx.entryRate} on ${fx.tradeDate}`);
+    });
+
+    // Watchlist
+    watchlistItems.forEach(w => {
+      parts.push(`Watchlist: ${w.name} (${w.symbol}) on ${w.exchange}`);
+    });
+
+    // Current quote
+    if (quote) {
+      parts.push(`\nCurrently viewing: ${activeName} (${activeSymbol})`);
+      parts.push(`Price: ${quote.price}, Change: ${quote.change} (${quote.changePercent}%)`);
+      parts.push(`Day Range: ${quote.dayLow} - ${quote.dayHigh}`);
+      parts.push(`52W Range: ${quote.fiftyTwoWeekLow} - ${quote.fiftyTwoWeekHigh}`);
+      parts.push(`Volume: ${quote.volume}`);
+    }
+
+    return parts.join('\n');
+  }, [positions, forexPositions, watchlistItems, quote, viewMode, activeName, activeSymbol]);
 
   const handleRefresh = useCallback(() => {
     refetch();
@@ -367,7 +418,37 @@ export default function Home() {
           </div>
         </div>
 
-        {/* AI Analysis Panel */}
+        {/* Technical Indicators Panel */}
+        {quote && chartArrays.closes.length > 0 && (
+          <TechnicalIndicators
+            symbol={activeSymbol}
+            closes={chartArrays.closes}
+            highs={chartArrays.highs}
+            lows={chartArrays.lows}
+            currentPrice={quote.price}
+          />
+        )}
+
+        {/* Multi-Agent AI Analysis Panel */}
+        {quote && (
+          <MultiAgentPanel
+            symbol={activeSymbol}
+            name={activeName}
+            price={quote.price}
+            change={quote.change}
+            changePercent={quote.changePercent}
+            dayHigh={quote.dayHigh}
+            dayLow={quote.dayLow}
+            fiftyTwoWeekHigh={quote.fiftyTwoWeekHigh}
+            fiftyTwoWeekLow={quote.fiftyTwoWeekLow}
+            volume={quote.volume}
+            previousClose={quote.previousClose}
+            currency={quote.currency}
+            exchange={quote.exchange}
+          />
+        )}
+
+        {/* Single-Agent AI Analysis Panel */}
         {quote && (
           <StockAnalysis
             symbol={activeSymbol}
@@ -407,7 +488,16 @@ export default function Home() {
           selectedSymbol={viewMode?.type === 'watchlist' ? viewMode.item.yahooSymbol : undefined}
         />
 
-        {/* News Feed */}
+        {/* Sentiment-Scored News Feed */}
+        {news.length > 0 && (
+          <SentimentNewsFeed
+            symbol={activeSymbol}
+            instrumentName={activeName}
+            newsItems={news}
+          />
+        )}
+
+        {/* Regular News Feed (fallback) */}
         <NewsFeed news={news} loading={newsLoading} />
 
         {/* Mobile Add Button */}
@@ -416,11 +506,14 @@ export default function Home() {
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.5 }}
           onClick={() => setAddDialogOpen(true)}
-          className="fixed bottom-6 right-6 sm:hidden flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl glow-blue z-40"
+          className="fixed bottom-6 left-6 sm:hidden flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl glow-blue z-40"
         >
           <Plus className="h-6 w-6" />
         </motion.button>
       </main>
+
+      {/* Kora Chat — Floating AI Assistant */}
+      <KoraChat portfolioContext={portfolioContext} />
 
       {/* Add Position Dialog */}
       <AddPositionDialog

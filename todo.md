@@ -34,17 +34,35 @@
 - [x] Build forex position card showing entry rate, current rate, P&L in both USD and CHF
 - [x] Integrate forex positions into the dashboard alongside BRNT
 - [x] Write vitest tests for forex positions
-- [ ] Push all code to sachmans/stock_dash GitHub repo
+- [x] Push all code to sachmans/stock_dash GitHub repo
 - [x] Fix forex vitest tests (mock callDataApi properly)
-- [ ] Explore Core AI Backend API endpoints (ai.s9n.dxb-gw.basanti.ai)
-- [ ] Explore CognitionOS API endpoints (cognition.s9n.dxb-gw.basanti.ai)
+- [x] Explore Core AI Backend API endpoints (ai.s9n.dxb-gw.basanti.ai)
+- [x] Explore CognitionOS API endpoints (cognition.s9n.dxb-gw.basanti.ai)
 - [ ] Build integration to push portfolio/forex data to AI Backend
-- [ ] Build integration to push context to CognitionOS
-- [ ] Add Kora chat interface via git submodule for portfolio Q&A
-- [ ] Push all code to sachmans/stock_dash GitHub repo
-- [ ] Register new org on CognitionOS for stock tracker
-- [ ] Register app on AI Backend for stock tracker
-- [ ] Set up auth credentials for both services
+- [x] Build integration to push context to CognitionOS (concepts stored)
+- [x] Add Kora chat interface (built-in LLM, ready for AI Backend swap)
+- [x] Push all code to sachmans/stock_dash GitHub repo
+- [x] Register new org on CognitionOS for stock tracker
+- [x] Register app on AI Backend for stock tracker
+- [x] Set up auth credentials for both services
 - [x] Fix data API quota exhaustion - add fallback or caching to prevent empty dashboard
 - [x] Make banner more generic (not oil-specific)
 - [x] Add position open dates to position cards (BRNT and forex)
+
+## Super System Merge (9 Repos + Alpaca Options Trading)
+- [x] Research tradingview/lightweight-charts for chart upgrade
+- [x] Research OpenBB-finance/OpenBB for multi-source data engine
+- [x] Research ZhuLinsen/daily_stock_analysis for automated analysis
+- [x] Research HKUDS/AI-Trader for multi-agent trading signals
+- [x] Research hsliuping/TradingAgents-CN for multi-agent architecture
+- [x] Research mvanhorn/last30days-skill for sentiment-scored news
+- [x] Research ashishpatel26/500-AI-Agents-Projects for agent patterns
+- [x] Research microsoft/qlib for quant investment pipeline
+- [x] Research options trading repos compatible with Alpaca API
+- [x] Upgrade charts to TradingView lightweight-charts (candlesticks, indicators, volume)
+- [x] Build multi-source data engine (OpenBB-inspired unified data layer)
+- [x] Build multi-agent AI analysis (AI-Trader + TradingAgents inspired debate system)
+- [x] Build sentiment-scored news feed (last30days-skill inspired multi-source scoring)
+- [x] Build Kora chat interface for portfolio Q&A
+- [ ] Integrate Alpaca options trading logic (documented for future)
+- [ ] Final test suite, checkpoint, and GitHub push

@@ -1,21 +1,18 @@
 /**
- * Stock Portfolio Tracker — Price Chart Component
- * Design: Dark Command Center
+ * Stock Portfolio Tracker — Professional Price Chart
+ * Powered by TradingView Lightweight Charts
  * 
- * Area chart showing price history with gradient fill.
- * Supports multiple time ranges.
+ * Features:
+ * - Candlestick chart with OHLC data
+ * - Volume histogram overlay
+ * - SMA (20/50) moving average indicators
+ * - Crosshair with OHLC tooltip
+ * - Multiple time range selector
+ * - Dark theme matching command center design
  */
 
-import { useState } from 'react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { createChart, type IChartApi, type ISeriesApi, type CandlestickData, type HistogramData, type LineData, ColorType, CrosshairMode, CandlestickSeries, LineSeries, AreaSeries, HistogramSeries } from 'lightweight-charts';
 import { motion } from 'framer-motion';
 import type { ChartDataPoint, TimeRange } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
@@ -40,24 +37,28 @@ const TIME_RANGES: { value: TimeRange; label: string }[] = [
   { value: 'ytd', label: 'YTD' },
 ];
 
-function CustomTooltip({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null;
-  const data = payload[0].payload as ChartDataPoint;
-  return (
-    <div className="glass-card rounded-lg px-3 py-2 shadow-xl border border-border/50">
-      <p className="text-xs text-muted-foreground mb-1">{data.date}</p>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
-        <span className="text-muted-foreground">Open</span>
-        <span className="font-display font-medium tabular-nums text-right">{formatNumber(data.open, 3)}</span>
-        <span className="text-muted-foreground">High</span>
-        <span className="font-display font-medium tabular-nums text-right">{formatNumber(data.high, 3)}</span>
-        <span className="text-muted-foreground">Low</span>
-        <span className="font-display font-medium tabular-nums text-right">{formatNumber(data.low, 3)}</span>
-        <span className="text-muted-foreground">Close</span>
-        <span className="font-display font-semibold tabular-nums text-right">{formatNumber(data.close, 3)}</span>
-      </div>
-    </div>
-  );
+type ChartType = 'candle' | 'line' | 'area';
+
+const CHART_TYPES: { value: ChartType; label: string; icon: string }[] = [
+  { value: 'candle', label: 'Candlestick', icon: '🕯️' },
+  { value: 'line', label: 'Line', icon: '📈' },
+  { value: 'area', label: 'Area', icon: '📊' },
+];
+
+/** Calculate Simple Moving Average */
+function calculateSMA(data: ChartDataPoint[], period: number): { time: string; value: number }[] {
+  const result: { time: string; value: number }[] = [];
+  for (let i = period - 1; i < data.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < period; j++) {
+      sum += data[i - j].close;
+    }
+    // Convert timestamp to YYYY-MM-DD for lightweight-charts
+    const d = new Date(data[i].timestamp * 1000);
+    const timeStr = d.toISOString().split('T')[0];
+    result.push({ time: timeStr, value: sum / period });
+  }
+  return result;
 }
 
 export default function PriceChart({
@@ -69,15 +70,243 @@ export default function PriceChart({
   previousClose,
   loading,
 }: PriceChartProps) {
-  const isPositive = currentPrice >= previousClose;
-  const chartColor = isPositive ? '#22c55e' : '#ef4444';
-  const gradientId = `chart-gradient-${symbol}`;
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const [chartType, setChartType] = useState<ChartType>('candle');
+  const [showSMA20, setShowSMA20] = useState(true);
+  const [showSMA50, setShowSMA50] = useState(true);
+  const [showVolume, setShowVolume] = useState(true);
+  const [hoveredData, setHoveredData] = useState<{
+    open: number; high: number; low: number; close: number; volume: number; time: string;
+  } | null>(null);
 
-  // Calculate Y-axis domain with padding
-  const prices = data.map((d) => d.close).filter(Boolean);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
-  const padding = (maxPrice - minPrice) * 0.1 || 1;
+  const isPositive = currentPrice >= previousClose;
+
+  useEffect(() => {
+    if (!chartContainerRef.current || data.length === 0) return;
+
+    // Clean up previous chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+    }
+
+    const container = chartContainerRef.current;
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: container.clientHeight,
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#94a3b8',
+        fontFamily: "'Space Grotesk', sans-serif",
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+        horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: 'rgba(59, 130, 246, 0.4)',
+          width: 1,
+          style: 2,
+          labelBackgroundColor: '#1e293b',
+        },
+        horzLine: {
+          color: 'rgba(59, 130, 246, 0.4)',
+          width: 1,
+          style: 2,
+          labelBackgroundColor: '#1e293b',
+        },
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(255, 255, 255, 0.06)',
+        scaleMargins: { top: 0.1, bottom: showVolume ? 0.25 : 0.05 },
+      },
+      timeScale: {
+        borderColor: 'rgba(255, 255, 255, 0.06)',
+        timeVisible: range === '1d' || range === '5d',
+        secondsVisible: false,
+      },
+      handleScroll: { vertTouchDrag: false },
+    });
+
+    chartRef.current = chart;
+
+    // Prepare data — convert timestamps to date strings for daily, or use time for intraday
+    const isIntraday = range === '1d' || range === '5d';
+    
+    const prepareTime = (point: ChartDataPoint) => {
+      if (isIntraday) {
+        return point.timestamp as any;
+      }
+      const d = new Date(point.timestamp * 1000);
+      return d.toISOString().split('T')[0];
+    };
+
+    // Deduplicate data by time
+    const seenTimes = new Set<string>();
+    const deduped = data.filter(point => {
+      const t = String(prepareTime(point));
+      if (seenTimes.has(t)) return false;
+      seenTimes.add(t);
+      return true;
+    });
+
+    if (chartType === 'candle') {
+      // Candlestick series
+      const candleSeries = chart.addSeries(CandlestickSeries, {
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderDownColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
+        wickUpColor: '#22c55e',
+      });
+
+      const candleData: CandlestickData[] = deduped.map(point => ({
+        time: prepareTime(point),
+        open: point.open,
+        high: point.high,
+        low: point.low,
+        close: point.close,
+      }));
+
+      candleSeries.setData(candleData as any);
+
+      // Add entry price line for the main position
+      if (symbol === 'BRNT.L') {
+        candleSeries.createPriceLine({
+          price: 78.66,
+          color: '#3b82f6',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: 'Entry @ 78.660',
+        });
+      }
+    } else if (chartType === 'line') {
+      const lineSeries = chart.addSeries(LineSeries, {
+        color: isPositive ? '#22c55e' : '#ef4444',
+        lineWidth: 2,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 4,
+      });
+
+      const lineData: LineData[] = deduped.map(point => ({
+        time: prepareTime(point),
+        value: point.close,
+      }));
+
+      lineSeries.setData(lineData as any);
+    } else {
+      // Area chart
+      const areaSeries = chart.addSeries(AreaSeries, {
+        topColor: isPositive ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)',
+        bottomColor: isPositive ? 'rgba(34, 197, 94, 0.02)' : 'rgba(239, 68, 68, 0.02)',
+        lineColor: isPositive ? '#22c55e' : '#ef4444',
+        lineWidth: 2,
+        crosshairMarkerVisible: true,
+      });
+
+      const areaData: LineData[] = deduped.map(point => ({
+        time: prepareTime(point),
+        value: point.close,
+      }));
+
+      areaSeries.setData(areaData as any);
+    }
+
+    // Volume histogram
+    if (showVolume) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+      });
+
+      chart.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+      });
+
+      const volumeData = deduped.map(point => ({
+        time: prepareTime(point),
+        value: point.volume,
+        color: point.close >= point.open
+          ? 'rgba(34, 197, 94, 0.3)'
+          : 'rgba(239, 68, 68, 0.3)',
+      }));
+
+      volumeSeries.setData(volumeData as any);
+    }
+
+    // SMA indicators (only for daily+ data with enough points)
+    if (!isIntraday && deduped.length >= 20 && showSMA20) {
+      const sma20Series = chart.addSeries(LineSeries, {
+        color: '#f59e0b',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      const sma20Data = calculateSMA(deduped, 20);
+      sma20Series.setData(sma20Data as any);
+    }
+
+    if (!isIntraday && deduped.length >= 50 && showSMA50) {
+      const sma50Series = chart.addSeries(LineSeries, {
+        color: '#8b5cf6',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      const sma50Data = calculateSMA(deduped, 50);
+      sma50Series.setData(sma50Data as any);
+    }
+
+    // Crosshair move handler for OHLC tooltip
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time || !param.seriesData) {
+        setHoveredData(null);
+        return;
+      }
+      // Find the matching data point
+      const timeStr = String(param.time);
+      const match = deduped.find(d => {
+        const t = String(prepareTime(d));
+        return t === timeStr;
+      });
+      if (match) {
+        setHoveredData({
+          open: match.open,
+          high: match.high,
+          low: match.low,
+          close: match.close,
+          volume: match.volume,
+          time: match.date,
+        });
+      }
+    });
+
+    // Fit content
+    chart.timeScale().fitContent();
+
+    // Resize observer
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        chart.applyOptions({ width, height });
+      }
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+    };
+  }, [data, chartType, showSMA20, showSMA50, showVolume, range, symbol, isPositive, currentPrice]);
 
   return (
     <motion.div
@@ -86,11 +315,31 @@ export default function PriceChart({
       transition={{ duration: 0.5, delay: 0.1 }}
       className="glass-card rounded-xl p-5"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="font-display text-base font-semibold text-foreground">
-          Price History
-        </h2>
+      {/* Header Row */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-3">
+          <h2 className="font-display text-base font-semibold text-foreground">
+            Price Chart
+          </h2>
+          {/* Chart Type Selector */}
+          <div className="flex items-center gap-0.5 rounded-lg bg-secondary/50 p-0.5">
+            {CHART_TYPES.map((ct) => (
+              <button
+                key={ct.value}
+                onClick={() => setChartType(ct.value)}
+                title={ct.label}
+                className={`px-2 py-1 rounded-md text-xs transition-all ${
+                  chartType === ct.value
+                    ? 'bg-primary/20 text-primary shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {ct.icon}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Time Range Selector */}
         <div className="flex items-center gap-1 rounded-lg bg-secondary/50 p-1">
           {TIME_RANGES.map((tr) => (
@@ -109,8 +358,63 @@ export default function PriceChart({
         </div>
       </div>
 
-      {/* Chart */}
-      <div className="h-[280px] sm:h-[340px]">
+      {/* Indicator Toggles */}
+      <div className="flex items-center gap-3 mb-3">
+        <button
+          onClick={() => setShowSMA20(!showSMA20)}
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-all ${
+            showSMA20 ? 'bg-amber-500/20 text-amber-400' : 'text-muted-foreground/50 hover:text-muted-foreground'
+          }`}
+        >
+          <span className="w-3 h-0.5 rounded" style={{ backgroundColor: showSMA20 ? '#f59e0b' : '#475569' }} />
+          SMA 20
+        </button>
+        <button
+          onClick={() => setShowSMA50(!showSMA50)}
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-all ${
+            showSMA50 ? 'bg-violet-500/20 text-violet-400' : 'text-muted-foreground/50 hover:text-muted-foreground'
+          }`}
+        >
+          <span className="w-3 h-0.5 rounded" style={{ backgroundColor: showSMA50 ? '#8b5cf6' : '#475569' }} />
+          SMA 50
+        </button>
+        <button
+          onClick={() => setShowVolume(!showVolume)}
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-all ${
+            showVolume ? 'bg-blue-500/20 text-blue-400' : 'text-muted-foreground/50 hover:text-muted-foreground'
+          }`}
+        >
+          <span className="w-2 h-2.5 rounded-sm" style={{ backgroundColor: showVolume ? '#3b82f6' : '#475569' }} />
+          Vol
+        </button>
+      </div>
+
+      {/* OHLC Tooltip Overlay */}
+      {hoveredData && (
+        <div className="flex items-center gap-4 mb-2 text-xs font-display tabular-nums">
+          <span className="text-muted-foreground">
+            {hoveredData.time}
+          </span>
+          <span>
+            O <span className="text-foreground font-medium">{formatNumber(hoveredData.open, 3)}</span>
+          </span>
+          <span>
+            H <span className="text-green-400 font-medium">{formatNumber(hoveredData.high, 3)}</span>
+          </span>
+          <span>
+            L <span className="text-red-400 font-medium">{formatNumber(hoveredData.low, 3)}</span>
+          </span>
+          <span>
+            C <span className="text-foreground font-medium">{formatNumber(hoveredData.close, 3)}</span>
+          </span>
+          <span>
+            V <span className="text-blue-400 font-medium">{hoveredData.volume?.toLocaleString() ?? '—'}</span>
+          </span>
+        </div>
+      )}
+
+      {/* Chart Container */}
+      <div className="h-[300px] sm:h-[380px]" ref={chartContainerRef}>
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <div className="h-8 w-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
@@ -119,49 +423,7 @@ export default function PriceChart({
           <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
             No chart data available
           </div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-              <defs>
-                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={chartColor} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(255,255,255,0.04)"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="date"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                dy={8}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                domain={[minPrice - padding, maxPrice + padding]}
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: '#94a3b8', fontSize: 11 }}
-                dx={-8}
-                tickFormatter={(v) => v.toFixed(1)}
-                width={55}
-              />
-              <Tooltip content={<CustomTooltip />} />
-              <Area
-                type="monotone"
-                dataKey="close"
-                stroke={chartColor}
-                strokeWidth={2}
-                fill={`url(#${gradientId})`}
-                animationDuration={800}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
+        ) : null}
       </div>
     </motion.div>
   );
