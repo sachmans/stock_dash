@@ -3,13 +3,19 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { callDataApi } from "./_core/dataApi";
+import { aiInvoke } from "./lib/aiProvider";
+import { getProviderStatus } from "./lib/aiProvider";
 import { cacheGet, cacheSet, CACHE_TTL } from "./cache";
 import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
 import { computeIndicators, generateDailyAnalysis, calcSMA } from "./dataEngine";
 import { runMultiAgentAnalysis } from "./multiAgentAnalysis";
 import { scoreNewsSentiment, calculateSentimentSummary } from "./sentimentNews";
-import { aiComplete, getProviderStatus } from "./lib/aiProvider";
-import { syncPortfolioConcept, syncWatchlistConcept } from "./lib/cognitionOS";
+import { ingestScoredNews } from "./lib/newsIngestion";
+import { ingestRecommendation, recallPreviousRecommendations } from "./lib/recommendationIngestion";
+import { extractContext, getKnowledgeStatus } from "./lib/progressiveExtraction";
+import { setupTradingDomain, getDomainStatus } from "./lib/tradingDomainSetup";
+import { getCognitionOS } from "./lib/cognitionOSClient";
+import { getMemoryVault } from "./lib/memoryVaultClient";
 import { z } from "zod";
 
 /** Track whether the Data API quota is exhausted so we skip it quickly */
@@ -164,8 +170,7 @@ export const appRouter = router({
       }),
 
     /**
-     * Single-agent AI analysis — now via unified AI Provider
-     * (Core AI Backend → Manus Forge fallback) with CognitionOS enrichment.
+     * Single-agent AI analysis with progressive extraction from CognitionOS.
      */
     getAnalysis: publicProcedure
       .input(z.object({
@@ -189,6 +194,15 @@ export const appRouter = router({
         if (cached) return cached;
 
         try {
+          // Progressive extraction: pull context from CognitionOS + Memory Vault
+          let knowledgeContext = '';
+          try {
+            const ctx = await extractContext(input.symbol, input.name);
+            knowledgeContext = ctx.formattedContext;
+          } catch (err) {
+            console.warn('[Stock API] Progressive extraction failed, continuing without context:', err);
+          }
+
           const prompt = `You are a senior financial analyst AI. Analyze the following instrument and provide a structured investment analysis.
 
 INSTRUMENT DATA:
@@ -202,12 +216,13 @@ ${input.fiftyTwoWeekLow ? `- 52-Week Low: ${input.fiftyTwoWeekLow.toFixed(2)}` :
 ${input.volume ? `- Volume: ${input.volume.toLocaleString()}` : ''}
 ${input.previousClose ? `- Previous Close: ${input.previousClose.toFixed(3)}` : ''}
 - Exchange: ${input.exchange || 'Unknown'}
+${knowledgeContext}
 
 Provide your analysis as JSON with these exact fields.`;
 
-          const response = await aiComplete({
+          const response = await aiInvoke({
             messages: [
-              { role: "system", content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON. Include specific price levels." },
+              { role: "system", content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON. Include specific price levels. If knowledge graph context is provided, incorporate past analysis patterns and known facts into your assessment." },
               { role: "user", content: prompt },
             ],
             response_format: {
@@ -241,13 +256,12 @@ Provide your analysis as JSON with these exact fields.`;
                 },
               },
             },
-            enrichWithKnowledgeGraph: {
-              symbol: input.symbol,
-              additionalTerms: [input.name],
-            },
           });
 
-          const analysis = JSON.parse(response.content);
+          const content = response.choices[0]?.message?.content;
+          if (!content || typeof content !== 'string') return null;
+
+          const analysis = JSON.parse(content);
           const VALID_RECS = ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL'];
           const VALID_RISKS = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
 
@@ -268,10 +282,32 @@ Provide your analysis as JSON with these exact fields.`;
               : ['No catalysts identified'],
             analyzedAt: Date.now(),
             symbol: input.symbol,
-            aiProvider: response.provider,
           };
 
           cacheSet(cacheKey, result, CACHE_TTL.ANALYSIS);
+
+          // Fire-and-forget: push recommendation into CognitionOS + Memory Vault
+          ingestRecommendation({
+            symbol: input.symbol,
+            instrumentName: input.name,
+            finalVerdict: result.recommendation,
+            confidence: result.confidence,
+            consensusScore: result.confidence - 50, // Normalize to -50..+50
+            moderatorSummary: result.summary,
+            agentOpinions: [{
+              agentName: 'SingleAgent',
+              role: 'Senior Financial Analyst',
+              verdict: result.recommendation,
+              confidence: result.confidence,
+              reasoning: `${result.bullCase} vs ${result.bearCase}`,
+              keyPoints: result.catalysts,
+            }],
+            priceTarget: result.keyLevels.target,
+            stopLoss: result.keyLevels.support,
+            riskLevel: result.riskLevel,
+            analysisType: 'single_agent',
+          }).catch(err => console.error('[Stock API] Recommendation ingestion failed:', err));
+
           return result;
         } catch (err) {
           console.error("[Stock API] Analysis error:", err);
@@ -281,7 +317,7 @@ Provide your analysis as JSON with these exact fields.`;
 
     /**
      * Multi-Agent AI Analysis — 4 specialist agents + moderator.
-     * Now uses unified AI Provider with CognitionOS enrichment.
+     * Now with progressive extraction from CognitionOS knowledge graph.
      */
     getMultiAgentAnalysis: publicProcedure
       .input(z.object({
@@ -310,6 +346,32 @@ Provide your analysis as JSON with these exact fields.`;
         try {
           const result = await runMultiAgentAnalysis(input);
           cacheSet(cacheKey, result, CACHE_TTL.ANALYSIS);
+
+          // Fire-and-forget: push multi-agent recommendation into CognitionOS + Memory Vault
+          if (result) {
+            ingestRecommendation({
+              symbol: input.symbol,
+              instrumentName: input.name,
+              finalVerdict: result.consensus?.recommendation || result.finalVerdict?.action || 'HOLD',
+              confidence: result.consensus?.confidence || 50,
+              consensusScore: (result.consensus?.confidence || 50) - 50,
+              moderatorSummary: result.consensus?.summary || result.debate || '',
+              agentOpinions: (result.agents || []).map(a => ({
+                agentName: a.agent,
+                role: a.role,
+                verdict: a.stance,
+                confidence: a.confidence,
+                reasoning: a.reasoning,
+                keyPoints: a.keyPoints || [],
+              })),
+              priceTarget: result.finalVerdict?.targetPrice,
+              stopLoss: result.finalVerdict?.stopLoss,
+              timeHorizon: result.finalVerdict?.timeHorizon,
+              riskLevel: result.finalVerdict?.riskRewardRatio > 2 ? 'LOW' : result.finalVerdict?.riskRewardRatio > 1 ? 'MEDIUM' : 'HIGH',
+              analysisType: 'multi_agent',
+            }).catch(err => console.error('[Stock API] Multi-agent recommendation ingestion failed:', err));
+          }
+
           return result;
         } catch (err) {
           console.error("[Stock API] Multi-agent analysis error:", err);
@@ -371,7 +433,8 @@ Provide your analysis as JSON with these exact fields.`;
       }),
 
     /**
-     * Sentiment-scored news analysis — via unified AI Provider.
+     * Sentiment-scored news analysis.
+     * Now pushes scored articles into CognitionOS + Memory Vault.
      */
     getSentimentNews: publicProcedure
       .input(z.object({
@@ -420,12 +483,28 @@ Provide your analysis as JSON with these exact fields.`;
 
         const result = { articles: scoredArticles, summary };
         cacheSet(cacheKey, result, CACHE_TTL.INSIGHTS);
+
+        // Fire-and-forget: push scored news into CognitionOS + Memory Vault
+        ingestScoredNews(
+          scoredArticles.map(a => ({
+            title: a.title,
+            summary: a.summary,
+            source: a.source,
+            sentiment: a.sentiment,
+            score: a.score,
+            confidence: a.confidence,
+            impact: a.impact,
+            category: a.category,
+          })),
+          input.symbol,
+          input.instrumentName,
+        ).catch(err => console.error('[Stock API] News ingestion failed:', err));
+
         return result;
       }),
 
     /**
-     * Kora Chat — AI portfolio assistant.
-     * Now uses unified AI Provider with CognitionOS knowledge graph enrichment.
+     * Kora Chat — AI portfolio assistant with Memory Vault context.
      */
     koraChat: publicProcedure
       .input(z.object({
@@ -438,17 +517,51 @@ Provide your analysis as JSON with these exact fields.`;
       }))
       .mutation(async ({ input }) => {
         try {
+          // Enrich with Memory Vault context
+          let memoryContext = '';
+          try {
+            const memVault = getMemoryVault();
+            const recentMemory = await memVault.search({
+              query: input.message,
+              limit: 3,
+            });
+            if (recentMemory.episodes && recentMemory.episodes.length > 0) {
+              memoryContext = '\n\nRELEVANT MEMORY (from past analyses):\n' +
+                recentMemory.episodes.map(ep =>
+                  `[${ep.timestamp}] ${ep.summary}: ${(ep.content || '').slice(0, 200)}`
+                ).join('\n');
+            }
+          } catch {
+            // Memory search is optional
+          }
+
+          // Enrich with CognitionOS knowledge graph
+          let graphContext = '';
+          try {
+            const cogOS = getCognitionOS();
+            const related = await cogOS.vectorSearch(input.message, 3, 0.3);
+            if (related.length > 0) {
+              graphContext = '\n\nKNOWLEDGE GRAPH CONTEXT:\n' +
+                related.map(r => `• ${r.name}: ${r.description.slice(0, 150)}`).join('\n');
+            }
+          } catch {
+            // Knowledge graph search is optional
+          }
+
           const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
             {
               role: 'system',
-              content: `You are Kora, an expert AI portfolio assistant powered by the SeKondBrain AI Backend and CognitionOS knowledge graph. You have deep knowledge of financial markets, trading strategies, technical analysis, and risk management.
+              content: `You are Kora, an expert AI portfolio assistant with access to a knowledge graph and memory vault. You have deep knowledge of financial markets, trading strategies, technical analysis, and risk management.
 
 CURRENT PORTFOLIO CONTEXT:
 ${input.portfolioContext}
+${memoryContext}
+${graphContext}
 
 Rules:
 - Be concise but thorough (2-4 paragraphs max)
 - Reference specific positions and numbers from the portfolio
+- When you have memory context, reference past analyses and how the situation has evolved
 - Provide actionable insights, not generic advice
 - When discussing risk, quantify it (e.g., "your USD/CHF exposure is $300k")
 - Use professional financial language
@@ -466,73 +579,135 @@ Rules:
 
           messages.push({ role: 'user', content: input.message });
 
-          const response = await aiComplete({
-            messages,
-            enrichWithKnowledgeGraph: {
-              symbol: 'portfolio',
-              additionalTerms: ['BRNT', 'USD/CHF', 'trading'],
-            },
-          });
+          const response = await aiInvoke({ messages });
+          const reply = response?.choices?.[0]?.message?.content;
 
-          return {
-            reply: response.content || 'I was unable to generate a response. Please try again.',
-            aiProvider: response.provider,
-          };
+          // Fire-and-forget: store the conversation as a Memory Vault episode
+          const memVault = getMemoryVault();
+          memVault.createEpisode({
+            content: `User asked: "${input.message}"\nKora replied: "${typeof reply === 'string' ? reply.slice(0, 500) : 'error'}"`,
+            summary: `Kora chat: ${input.message.slice(0, 80)}`,
+            extra_metadata: { type: 'kora_conversation' },
+          }).catch(() => {});
+
+          return { reply: typeof reply === 'string' ? reply : 'I was unable to generate a response. Please try again.' };
         } catch (err) {
           console.error('[Kora Chat] Error:', err);
           return { reply: 'I encountered an error. Please try again in a moment.' };
         }
       }),
+  }),
+
+  /**
+   * CognitionOS domain management endpoints.
+   */
+  cognition: router({
+    /**
+     * Set up the trading domain seed graph in CognitionOS.
+     * Idempotent — safe to call multiple times.
+     */
+    setupDomain: publicProcedure.mutation(async () => {
+      try {
+        const result = await setupTradingDomain();
+        return result;
+      } catch (err: any) {
+        console.error('[CognitionOS] Domain setup failed:', err);
+        return {
+          success: false,
+          conceptsCreated: 0,
+          relationshipsCreated: 0,
+          errors: [err.message],
+        };
+      }
+    }),
 
     /**
-     * Get AI provider status — shows which backends are configured and healthy.
+     * Get the current CognitionOS domain status.
      */
-    getAiProviderStatus: publicProcedure.query(() => {
+    getDomainStatus: publicProcedure.query(async () => {
+      try {
+        return await getDomainStatus();
+      } catch (err: any) {
+        return { healthy: false, services: { error: err.message }, graphReady: false };
+      }
+    }),
+
+    /**
+     * Get AI provider status (which provider is active, circuit breaker state).
+     */
+    getProviderStatus: publicProcedure.query(() => {
       return getProviderStatus();
     }),
 
     /**
-     * Sync a portfolio position to CognitionOS knowledge graph.
+     * Get knowledge status for a specific symbol.
      */
-    syncToCognitionOS: publicProcedure
-      .input(z.object({
-        symbol: z.string(),
-        name: z.string(),
-        quantity: z.number(),
-        entryPrice: z.number(),
-        currentPrice: z.number().optional(),
-        exchange: z.string().optional(),
-        type: z.enum(['equity', 'forex', 'commodity', 'etf']),
-        openedDate: z.string().optional(),
-      }))
-      .mutation(async ({ input }) => {
+    getKnowledgeStatus: publicProcedure
+      .input(z.object({ symbol: z.string() }))
+      .query(async ({ input }) => {
         try {
-          const conceptId = await syncPortfolioConcept(input);
-          return { success: !!conceptId, conceptId };
-        } catch (err) {
-          console.error('[CognitionOS] Sync failed:', err);
-          return { success: false, conceptId: null };
+          return await getKnowledgeStatus(input.symbol);
+        } catch {
+          return { conceptsKnown: 0, pastDecisions: 0, episodesStored: 0 };
         }
       }),
 
     /**
-     * Sync a watchlist item to CognitionOS knowledge graph.
+     * Search the knowledge graph.
      */
-    syncWatchlistToCognitionOS: publicProcedure
+    search: publicProcedure
       .input(z.object({
-        symbol: z.string(),
-        name: z.string(),
-        currentPrice: z.number().optional(),
+        query: z.string(),
+        topK: z.number().default(10),
       }))
-      .mutation(async ({ input }) => {
+      .query(async ({ input }) => {
         try {
-          const conceptId = await syncWatchlistConcept(input);
-          return { success: !!conceptId, conceptId };
-        } catch (err) {
-          console.error('[CognitionOS] Watchlist sync failed:', err);
-          return { success: false, conceptId: null };
+          const cogOS = getCognitionOS();
+          return await cogOS.vectorSearch(input.query, input.topK, 0.2);
+        } catch (err: any) {
+          console.error('[CognitionOS] Search failed:', err);
+          return [];
         }
       }),
+  }),
+
+  /**
+   * Memory Vault endpoints for agentic memory.
+   */
+  memory: router({
+    /**
+     * Search Memory Vault for past episodes.
+     */
+    search: publicProcedure
+      .input(z.object({
+        query: z.string(),
+        limit: z.number().default(10),
+      }))
+      .query(async ({ input }) => {
+        try {
+          const memVault = getMemoryVault();
+          const result = await memVault.search({
+            query: input.query,
+            limit: input.limit,
+          });
+          return result.episodes || [];
+        } catch (err: any) {
+          console.error('[MemoryVault] Search failed:', err);
+          return [];
+        }
+      }),
+
+    /**
+     * Get Memory Vault health status.
+     */
+    health: publicProcedure.query(async () => {
+      try {
+        const memVault = getMemoryVault();
+        return await memVault.health();
+      } catch (err: any) {
+        return { healthy: false, neo4j_connected: false, postgres_connected: false };
+      }
+    }),
   }),
 });
 
