@@ -55,7 +55,7 @@ jobs:
         id: port
         run: |
           REGISTRY="${{ steps.paths.outputs.data_drive }}/Runners/port-registry.json"
-          PORT=3024
+          PORT=3026
           if [[ -f "$REGISTRY" ]]; then
             PORT=$(python3 -c "
           import json
