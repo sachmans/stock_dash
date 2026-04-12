@@ -1,0 +1,99 @@
+name: SDDMini Deploy
+
+on:
+  push:
+    tags:
+      - 'SDDMini-KH/v*'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and deploy stock_dash
+    runs-on: [self-hosted, macOS, colima]
+    timeout-minutes: 30
+
+    env:
+      REPO_NAME: ${{ github.event.repository.name }}
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve paths
+        id: paths
+        run: |
+          if   [[ -d "/Volumes/Studio Data Drive" ]]; then DATA_DRIVE="/Volumes/Studio Data Drive"
+          elif [[ -d "/Volumes/DataDrive"          ]]; then DATA_DRIVE="/Volumes/DataDrive"
+          elif [[ -d "/Volumes/Data Drive"         ]]; then DATA_DRIVE="/Volumes/Data Drive"
+          else                                              DATA_DRIVE="$HOME"
+          fi
+          APP_DIR="$DATA_DRIVE/services/apps/$REPO_NAME"
+          ENV_FILE="$APP_DIR/.env"
+          echo "data_drive=$DATA_DRIVE"  >> "$GITHUB_OUTPUT"
+          echo "app_dir=$APP_DIR"        >> "$GITHUB_OUTPUT"
+          echo "env_file=$ENV_FILE"      >> "$GITHUB_OUTPUT"
+
+      - name: Ensure shared infrastructure is running
+        run: ~/infra/scripts/start.sh
+
+      - name: Load env
+        run: |
+          if [[ -f "${{ steps.paths.outputs.env_file }}" ]]; then
+            cp "${{ steps.paths.outputs.env_file }}" .env
+          fi
+
+      - name: Build image
+        run: docker build -t "$REPO_NAME:${RELEASE_TAG:-latest}" .
+
+      - name: Stop existing container
+        run: |
+          docker stop "$REPO_NAME" 2>/dev/null || true
+          docker rm "$REPO_NAME" 2>/dev/null || true
+
+      - name: Read port from registry
+        id: port
+        run: |
+          REGISTRY="${{ steps.paths.outputs.data_drive }}/Runners/port-registry.json"
+          PORT=3024
+          if [[ -f "$REGISTRY" ]]; then
+            PORT=$(python3 -c "
+          import json
+          with open('$REGISTRY') as f: reg = json.load(f)
+          app = reg.get('apps', {}).get('$REPO_NAME', {})
+          for p in app.get('ports', []):
+              if p.get('service','') in ('app',''):
+                  print(p['host_port']); break
+          " 2>/dev/null || echo "3024")
+          fi
+          echo "app_port=$PORT" >> "$GITHUB_OUTPUT"
+
+      - name: Run container
+        run: |
+          docker run -d \
+            --name "$REPO_NAME" \
+            --restart unless-stopped \
+            --log-driver json-file --log-opt max-size=50m --log-opt max-file=3 \
+            -v "${{ steps.paths.outputs.app_dir }}/data:/app/data" \
+            -p ${{ steps.port.outputs.app_port }}:3000 \
+            --network shared-infra \
+            --env-file "${{ steps.paths.outputs.env_file }}" \
+            "$REPO_NAME:${RELEASE_TAG:-latest}"
+
+      - name: Verify healthy
+        run: |
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:${{ steps.port.outputs.app_port }}/ >/dev/null 2>&1; then
+              echo "✓ $REPO_NAME is healthy on port ${{ steps.port.outputs.app_port }}"
+              docker ps --filter "name=$REPO_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+              exit 0
+            fi
+            echo "  attempt $i/12 — waiting 5s..."
+            sleep 5
+          done
+          echo "ERROR: $REPO_NAME not healthy" >&2
+          docker logs "$REPO_NAME" --tail 30 >&2
+          exit 1
+
+      - name: Clean up
+        run: docker image prune -f --filter "until=72h" || true
