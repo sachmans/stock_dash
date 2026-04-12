@@ -64,6 +64,7 @@ export type InvokeParams = {
   tools?: Tool[];
   toolChoice?: ToolChoice;
   tool_choice?: ToolChoice;
+  temperature?: number;
   maxTokens?: number;
   max_tokens?: number;
   outputSchema?: OutputSchema;

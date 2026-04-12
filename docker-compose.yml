@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  # ── MySQL Database ──────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: stockdash
+      MYSQL_USER: stockdash
+      MYSQL_PASSWORD: ${DB_PASSWORD:-stockdash_local_2024}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-stockdash_root_2024}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "stockdash", "-p${DB_PASSWORD:-stockdash_local_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── StockDash App ────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # ── Database (MySQL) ──
+      DATABASE_URL: mysql://stockdash:${DB_PASSWORD:-stockdash_local_2024}@db:3306/stockdash
+
+      # ── Auth ──
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-32-chars-min}
+
+      # ── Core AI Backend (LLM) ──
+      # Model routing: llamacpp_ip (local Llama 3.3 / Gemma / Qwen) → Groq fallback
+      CORE_AI_BACKEND_URL: ${CORE_AI_BACKEND_URL:-https://ai.s9n.dxb-gw.basanti.ai}
+      CORE_AI_BACKEND_JWT: ${CORE_AI_BACKEND_JWT:-}
+
+      # ── CognitionOS (Knowledge Graph) ──
+      COGNITION_OS_URL: ${COGNITION_OS_URL:-https://cognition.s9n.dxb-gw.basanti.ai}
+      COGNITION_OS_TENANT_ID: ${COGNITION_OS_TENANT_ID:-stock_dash}
+      COGNITION_OS_GRAPH_NAME: ${COGNITION_OS_GRAPH_NAME:-stock_trading}
+
+      # ── Memory Vault (Agentic Memory) ──
+      MEMORY_VAULT_URL: ${MEMORY_VAULT_URL:-https://ai.s9n.dxb-gw.basanti.ai/v1/memory}
+
+      # ── Server ──
+      PORT: "3000"
+      NODE_ENV: production
+
+volumes:
+  mysqldata:
+    driver: local

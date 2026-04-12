@@ -1,0 +1,467 @@
+# Stock Dashboard Skills Registry
+# ================================
+# These skill definitions are registered on Core AI Backend via /v1/skills/
+# and also used locally as fallback prompt templates when skill execution
+# is unavailable (e.g. auth not configured).
+#
+# Model preference: llamacpp (local Llama 3.3 / Gemma / Qwen) → Groq fallback
+# All skills use model_tier: balanced (maps to llama-3.3-70b-versatile)
+
+skills:
+  # ── Single-Agent Financial Analysis ──────────────────────────────
+  - name: "stockdash.financial_analysis"
+    description: "Senior financial analyst providing structured investment analysis with price targets, risk assessment, and actionable recommendations."
+    category: "finance/analysis"
+    language: "english"
+    frameworks: ["finance", "trading"]
+    applies_to: ["stock_analysis", "forex_analysis", "commodity_analysis"]
+    agent_types: ["analyst"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are a senior financial analyst. Provide concise, data-driven analysis.
+      Always respond with valid JSON. Include specific price levels.
+      If knowledge graph context is provided, incorporate past analysis patterns
+      and known facts into your assessment.
+    prompt_template: |
+      Analyze the following instrument and provide a structured investment analysis.
+
+      Instrument: {{ name }} ({{ symbol }})
+      Current Price: {{ price }} {{ currency }}
+      Type: {{ type }}
+
+      {% if knowledge_context %}
+      === Knowledge Graph Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      Provide your analysis as JSON with this structure:
+      {
+        "summary": "2-3 sentence overview",
+        "recommendation": "BUY | SELL | HOLD",
+        "confidence": 0.0-1.0,
+        "targets": { "entry": number, "stopLoss": number, "takeProfit": number },
+        "keyFactors": ["factor1", "factor2", "factor3"],
+        "risks": ["risk1", "risk2"],
+        "timeframe": "short-term | medium-term | long-term"
+      }
+    input_schema:
+      type: object
+      properties:
+        symbol:
+          type: string
+          description: "Instrument ticker symbol"
+        name:
+          type: string
+          description: "Instrument display name"
+        price:
+          type: number
+          description: "Current price"
+        currency:
+          type: string
+          description: "Currency code"
+        type:
+          type: string
+          description: "Instrument type (stock, forex, commodity)"
+        knowledge_context:
+          type: string
+          description: "Optional context from CognitionOS knowledge graph"
+      required: ["symbol", "name", "price"]
+    output_schema:
+      type: object
+      properties:
+        summary:
+          type: string
+        recommendation:
+          type: string
+          enum: ["BUY", "SELL", "HOLD"]
+        confidence:
+          type: number
+        targets:
+          type: object
+          properties:
+            entry: { type: number }
+            stopLoss: { type: number }
+            takeProfit: { type: number }
+        keyFactors:
+          type: array
+          items: { type: string }
+        risks:
+          type: array
+          items: { type: string }
+        timeframe:
+          type: string
+      required: ["summary", "recommendation", "confidence", "targets", "keyFactors", "risks", "timeframe"]
+
+  # ── Multi-Agent: Technical Analyst ───────────────────────────────
+  - name: "stockdash.agent_technical"
+    description: "Technical analysis agent focusing on chart patterns, indicators, support/resistance levels, and volume analysis."
+    category: "finance/multi-agent"
+    language: "english"
+    frameworks: ["finance", "technical-analysis"]
+    applies_to: ["technical_analysis"]
+    agent_types: ["technical_analyst"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are a Technical Analyst agent. Analyze the following instrument PURELY
+      from a technical analysis perspective. Focus on:
+      - Chart patterns and trend analysis
+      - Key support and resistance levels
+      - Volume analysis and momentum indicators
+      - RSI, MACD, Bollinger Bands signals
+      - Price action and candlestick patterns
+      Respond with valid JSON.
+    prompt_template: |
+      Analyze {{ name }} ({{ symbol }}) at {{ price }} {{ currency }}.
+
+      {% if knowledge_context %}
+      === Historical Technical Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      Provide JSON: { "signal": "BULLISH|BEARISH|NEUTRAL", "confidence": 0-1,
+      "keyLevels": { "support": [], "resistance": [] },
+      "indicators": { "rsi": "", "macd": "", "bollingerBands": "" },
+      "patterns": [], "summary": "" }
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        knowledge_context: { type: string }
+      required: ["symbol", "name", "price"]
+    output_schema:
+      type: object
+      properties:
+        signal: { type: string, enum: ["BULLISH", "BEARISH", "NEUTRAL"] }
+        confidence: { type: number }
+        keyLevels: { type: object }
+        indicators: { type: object }
+        patterns: { type: array, items: { type: string } }
+        summary: { type: string }
+      required: ["signal", "confidence", "summary"]
+
+  # ── Multi-Agent: Fundamental Analyst ─────────────────────────────
+  - name: "stockdash.agent_fundamental"
+    description: "Fundamental analysis agent focusing on macro factors, earnings, valuations, and sector trends."
+    category: "finance/multi-agent"
+    language: "english"
+    frameworks: ["finance", "fundamental-analysis"]
+    applies_to: ["fundamental_analysis"]
+    agent_types: ["fundamental_analyst"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are a Fundamental Analyst agent. Analyze the following instrument from
+      a fundamental/macro perspective. Focus on:
+      - Earnings, revenue, and growth metrics
+      - Valuation ratios (P/E, P/B, EV/EBITDA)
+      - Sector and industry trends
+      - Macroeconomic factors (interest rates, inflation, GDP)
+      - Competitive positioning and moat analysis
+      Respond with valid JSON.
+    prompt_template: |
+      Analyze {{ name }} ({{ symbol }}) at {{ price }} {{ currency }}.
+
+      {% if knowledge_context %}
+      === Historical Fundamental Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      Provide JSON: { "outlook": "POSITIVE|NEGATIVE|NEUTRAL", "confidence": 0-1,
+      "valuation": "UNDERVALUED|FAIR|OVERVALUED",
+      "keyMetrics": {}, "macroFactors": [], "summary": "" }
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        knowledge_context: { type: string }
+      required: ["symbol", "name", "price"]
+    output_schema:
+      type: object
+      properties:
+        outlook: { type: string, enum: ["POSITIVE", "NEGATIVE", "NEUTRAL"] }
+        confidence: { type: number }
+        valuation: { type: string }
+        keyMetrics: { type: object }
+        macroFactors: { type: array, items: { type: string } }
+        summary: { type: string }
+      required: ["outlook", "confidence", "summary"]
+
+  # ── Multi-Agent: Sentiment Analyst ───────────────────────────────
+  - name: "stockdash.agent_sentiment"
+    description: "Sentiment analysis agent focusing on market mood, social signals, news flow, and institutional positioning."
+    category: "finance/multi-agent"
+    language: "english"
+    frameworks: ["finance", "sentiment-analysis"]
+    applies_to: ["sentiment_analysis"]
+    agent_types: ["sentiment_analyst"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are a Sentiment Analyst agent. Analyze the following instrument from
+      a market sentiment perspective. Focus on:
+      - Overall market mood and fear/greed indicators
+      - Social media and retail investor sentiment
+      - Institutional positioning and fund flows
+      - News flow and media narrative
+      - Options market sentiment (put/call ratios)
+      Respond with valid JSON.
+    prompt_template: |
+      Analyze {{ name }} ({{ symbol }}) at {{ price }} {{ currency }}.
+
+      {% if knowledge_context %}
+      === Historical Sentiment Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      Provide JSON: { "sentiment": "BULLISH|BEARISH|NEUTRAL", "confidence": 0-1,
+      "drivers": [], "risks": [], "socialSignals": "", "summary": "" }
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        knowledge_context: { type: string }
+      required: ["symbol", "name", "price"]
+    output_schema:
+      type: object
+      properties:
+        sentiment: { type: string, enum: ["BULLISH", "BEARISH", "NEUTRAL"] }
+        confidence: { type: number }
+        drivers: { type: array, items: { type: string } }
+        risks: { type: array, items: { type: string } }
+        socialSignals: { type: string }
+        summary: { type: string }
+      required: ["sentiment", "confidence", "summary"]
+
+  # ── Multi-Agent: Risk Manager ────────────────────────────────────
+  - name: "stockdash.agent_risk"
+    description: "Risk management agent focusing on position sizing, portfolio exposure, correlation risk, and tail events."
+    category: "finance/multi-agent"
+    language: "english"
+    frameworks: ["finance", "risk-management"]
+    applies_to: ["risk_analysis"]
+    agent_types: ["risk_manager"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are a Risk Manager agent. Analyze the following instrument from a risk
+      management perspective. Focus on:
+      - Position sizing and portfolio allocation
+      - Correlation with existing portfolio holdings
+      - Downside risk and maximum drawdown scenarios
+      - Tail risk events and black swan potential
+      - Risk/reward ratio and Kelly criterion
+      Respond with valid JSON.
+    prompt_template: |
+      Analyze {{ name }} ({{ symbol }}) at {{ price }} {{ currency }}.
+
+      {% if knowledge_context %}
+      === Historical Risk Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      Provide JSON: { "riskLevel": "LOW|MEDIUM|HIGH|EXTREME", "confidence": 0-1,
+      "maxDrawdown": "", "positionSizeAdvice": "",
+      "correlationRisks": [], "tailRisks": [], "summary": "" }
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        knowledge_context: { type: string }
+      required: ["symbol", "name", "price"]
+    output_schema:
+      type: object
+      properties:
+        riskLevel: { type: string, enum: ["LOW", "MEDIUM", "HIGH", "EXTREME"] }
+        confidence: { type: number }
+        maxDrawdown: { type: string }
+        positionSizeAdvice: { type: string }
+        correlationRisks: { type: array, items: { type: string } }
+        tailRisks: { type: array, items: { type: string } }
+        summary: { type: string }
+      required: ["riskLevel", "confidence", "summary"]
+
+  # ── Multi-Agent: Moderator ───────────────────────────────────────
+  - name: "stockdash.agent_moderator"
+    description: "Moderator agent that synthesizes opinions from specialist agents into a unified consensus recommendation."
+    category: "finance/multi-agent"
+    language: "english"
+    frameworks: ["finance", "consensus"]
+    applies_to: ["multi_agent_synthesis"]
+    agent_types: ["moderator"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are the Moderator agent. You have received analysis from 4 specialist
+      agents. Your job is to:
+      1. Weigh each agent's analysis based on confidence and reasoning quality
+      2. Identify consensus and disagreements
+      3. Produce a final unified recommendation
+      4. Assign an overall confidence score
+      Respond with valid JSON.
+    prompt_template: |
+      Synthesize the following specialist analyses for {{ name }} ({{ symbol }})
+      at {{ price }} {{ currency }}:
+
+      === Technical Analysis ===
+      {{ technical_opinion }}
+
+      === Fundamental Analysis ===
+      {{ fundamental_opinion }}
+
+      === Sentiment Analysis ===
+      {{ sentiment_opinion }}
+
+      === Risk Assessment ===
+      {{ risk_opinion }}
+
+      Provide JSON: {
+        "recommendation": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL",
+        "confidence": 0-1,
+        "consensus": "AGREEMENT|PARTIAL|DISAGREEMENT",
+        "summary": "",
+        "keyPoints": [],
+        "dissenting": "",
+        "targets": { "entry": number, "stopLoss": number, "takeProfit": number },
+        "timeframe": ""
+      }
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        technical_opinion: { type: string }
+        fundamental_opinion: { type: string }
+        sentiment_opinion: { type: string }
+        risk_opinion: { type: string }
+      required: ["symbol", "name", "price", "technical_opinion", "fundamental_opinion", "sentiment_opinion", "risk_opinion"]
+    output_schema:
+      type: object
+      properties:
+        recommendation: { type: string }
+        confidence: { type: number }
+        consensus: { type: string }
+        summary: { type: string }
+        keyPoints: { type: array, items: { type: string } }
+        dissenting: { type: string }
+        targets: { type: object }
+        timeframe: { type: string }
+      required: ["recommendation", "confidence", "consensus", "summary"]
+
+  # ── Sentiment News Scorer ────────────────────────────────────────
+  - name: "stockdash.sentiment_scorer"
+    description: "Scores news articles for sentiment impact on a specific financial instrument."
+    category: "finance/sentiment"
+    language: "english"
+    frameworks: ["finance", "nlp"]
+    applies_to: ["news_scoring", "sentiment_analysis"]
+    agent_types: ["analyst"]
+    model_tier: "fast"
+    system_prompt: |
+      You are a financial news sentiment analyst. Analyze each news article's
+      impact on the specified instrument. For each article, provide a sentiment
+      score from -1.0 (very bearish) to +1.0 (very bullish), a confidence level,
+      and a brief rationale. Respond with valid JSON array.
+    prompt_template: |
+      Score the sentiment of these news articles for {{ name }} ({{ symbol }}):
+
+      {% for article in articles %}
+      [{{ loop.index }}] {{ article.title }}
+      {{ article.summary }}
+      {% endfor %}
+
+      Respond with JSON array: [{ "index": 1, "score": -1.0 to 1.0,
+      "confidence": 0-1, "rationale": "brief reason" }, ...]
+    input_schema:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        articles:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              summary: { type: string }
+      required: ["symbol", "name", "articles"]
+    output_schema:
+      type: array
+      items:
+        type: object
+        properties:
+          index: { type: integer }
+          score: { type: number }
+          confidence: { type: number }
+          rationale: { type: string }
+        required: ["index", "score", "confidence", "rationale"]
+
+  # ── Kora Portfolio Assistant ─────────────────────────────────────
+  - name: "stockdash.kora_chat"
+    description: "Kora is an expert AI portfolio assistant with deep knowledge of financial markets, trading strategies, technical analysis, and risk management."
+    category: "finance/assistant"
+    language: "english"
+    frameworks: ["finance", "chat"]
+    applies_to: ["portfolio_chat", "trading_advice"]
+    agent_types: ["assistant"]
+    model_tier: "balanced"
+    system_prompt: |
+      You are Kora, an expert AI portfolio assistant with access to a knowledge
+      graph and memory vault. You have deep knowledge of financial markets,
+      trading strategies, technical analysis, and risk management.
+
+      Your personality:
+      - Professional but approachable
+      - Data-driven with clear reasoning
+      - Proactive about risk warnings
+      - Concise but thorough
+
+      When answering:
+      1. Reference specific data points and levels
+      2. Provide actionable insights, not vague generalities
+      3. Always mention relevant risks
+      4. If you have knowledge graph context, incorporate historical patterns
+      5. If you have memory context, reference past conversations and decisions
+
+      Format responses in markdown for readability.
+    prompt_template: |
+      {% if knowledge_context %}
+      === Knowledge Graph Context ===
+      {{ knowledge_context }}
+      {% endif %}
+
+      {% if memory_context %}
+      === Memory Vault Context ===
+      {{ memory_context }}
+      {% endif %}
+
+      User question: {{ message }}
+    input_schema:
+      type: object
+      properties:
+        message:
+          type: string
+          description: "User's chat message"
+        knowledge_context:
+          type: string
+          description: "Context from CognitionOS knowledge graph"
+        memory_context:
+          type: string
+          description: "Context from Memory Vault episodes"
+      required: ["message"]
+    output_schema:
+      type: object
+      properties:
+        response:
+          type: string
+          description: "Kora's response in markdown format"
+      required: ["response"]

@@ -17,6 +17,12 @@ vi.mock("./lib/aiProvider", () => ({
   aiHealthCheck: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
+// Mock the skill-aware provider (used by getAnalysis and koraChat)
+vi.mock("./lib/skillAwareProvider", () => ({
+  executeSkill: vi.fn(),
+  executeChat: vi.fn(),
+}));
+
 // Mock Yahoo Finance (the sole data source now)
 vi.mock("./yahooFallback", () => ({
   fetchYahooChart: vi.fn().mockResolvedValue(null),
@@ -63,10 +69,13 @@ vi.mock("./lib/recommendationIngestion", () => ({
 
 import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
 import { aiInvoke } from "./lib/aiProvider";
+import { executeSkill, executeChat } from "./lib/skillAwareProvider";
 import { cacheClear } from "./cache";
 const mockedFetchYahooChart = vi.mocked(fetchYahooChart);
 const mockedFetchYahooNews = vi.mocked(fetchYahooNews);
 const mockedAiInvoke = vi.mocked(aiInvoke);
+const mockedExecuteSkill = vi.mocked(executeSkill);
+const mockedExecuteChat = vi.mocked(executeChat);
 
 function createPublicContext(): TrpcContext {
   return {
@@ -425,46 +434,34 @@ describe("stock.getAnalysis", () => {
     exchange: "LSE",
   };
 
-  const MOCK_LLM_RESPONSE = {
-    id: "coreai-test",
-    created: Date.now(),
-    model: "llama-3.3-70b-versatile",
-    choices: [
-      {
-        index: 0,
-        message: {
-          role: "assistant" as const,
-          content: JSON.stringify({
-            recommendation: "BUY",
-            confidence: 72,
-            summary: "BRNT shows bullish momentum with price recovering from recent lows. The 0.91% daily gain suggests renewed buying interest in crude oil ETCs.",
-            bullCase: "Oil prices are supported by OPEC+ production cuts and geopolitical tensions in key producing regions, which could drive prices toward the 52-week high.",
-            bearCase: "Global economic slowdown concerns and potential demand destruction could cap upside, with the instrument trading well below its 52-week high of 95.00.",
-            keyLevels: {
-              support: 77.00,
-              resistance: 80.50,
-              target: 85.00,
-            },
-            riskLevel: "MEDIUM",
-            catalysts: [
-              "OPEC+ production decision at next meeting",
-              "US crude oil inventory data release",
-              "Global PMI data indicating demand trends",
-            ],
-          }),
-        },
-        finish_reason: "stop",
+  // Mock skill execution result (executeSkill returns SkillExecutionResult)
+  const MOCK_SKILL_RESULT = {
+    output: {
+      recommendation: "BUY",
+      confidence: 72,
+      summary: "BRNT shows bullish momentum with price recovering from recent lows. The 0.91% daily gain suggests renewed buying interest in crude oil ETCs.",
+      bullCase: "Oil prices are supported by OPEC+ production cuts and geopolitical tensions in key producing regions, which could drive prices toward the 52-week high.",
+      bearCase: "Global economic slowdown concerns and potential demand destruction could cap upside, with the instrument trading well below its 52-week high of 95.00.",
+      keyLevels: {
+        support: 77.00,
+        resistance: 80.50,
+        target: 85.00,
       },
-    ],
-    usage: {
-      prompt_tokens: 500,
-      completion_tokens: 200,
-      total_tokens: 700,
+      riskLevel: "MEDIUM",
+      catalysts: [
+        "OPEC+ production decision at next meeting",
+        "US crude oil inventory data release",
+        "Global PMI data indicating demand trends",
+      ],
     },
+    model_used: "llama-3.3-70b-versatile",
+    execution_mode: "local_chat" as const,
+    skill_name: "stockdash.financial_analysis",
+    duration_ms: 1200,
   };
 
   it("returns structured analysis for a valid instrument", async () => {
-    mockedAiInvoke.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+    mockedExecuteSkill.mockResolvedValueOnce(MOCK_SKILL_RESULT);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -484,25 +481,27 @@ describe("stock.getAnalysis", () => {
     expect(result!.analyzedAt).toBeDefined();
   });
 
-  it("passes correct parameters to aiInvoke (Core AI Backend)", async () => {
-    mockedAiInvoke.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+  it("passes correct parameters to executeSkill (skill-aware provider)", async () => {
+    mockedExecuteSkill.mockResolvedValueOnce(MOCK_SKILL_RESULT);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 
     await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
 
-    expect(mockedAiInvoke).toHaveBeenCalledTimes(1);
-    const callArgs = mockedAiInvoke.mock.calls[0][0];
-    expect(callArgs.messages).toHaveLength(2);
-    expect(callArgs.messages[0].role).toBe("system");
-    expect(callArgs.messages[1].role).toBe("user");
-    expect(callArgs.response_format).toBeDefined();
-    expect((callArgs.response_format as any).type).toBe("json_schema");
+    expect(mockedExecuteSkill).toHaveBeenCalledTimes(1);
+    const callArgs = mockedExecuteSkill.mock.calls[0];
+    expect(callArgs[0]).toBe('stockdash.financial_analysis');
+    expect(callArgs[1]).toMatchObject({
+      symbol: 'BRNT.L',
+      name: 'WisdomTree Brent Crude Oil ETC',
+      price: 78.44,
+      currency: 'USD',
+    });
   });
 
-  it("returns null when Core AI Backend call fails", async () => {
-    mockedAiInvoke.mockRejectedValueOnce(new Error("Core AI Backend failed after retry"));
+  it("returns null when skill execution fails", async () => {
+    mockedExecuteSkill.mockRejectedValueOnce(new Error("Core AI Backend failed after retry"));
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -512,54 +511,38 @@ describe("stock.getAnalysis", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when LLM returns invalid JSON", async () => {
-    const invalidResponse = {
-      ...MOCK_LLM_RESPONSE,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant" as const,
-            content: "This is not valid JSON",
-          },
-          finish_reason: "stop",
-        },
-      ],
+  it("returns null when skill returns unparseable output", async () => {
+    const invalidResult = {
+      ...MOCK_SKILL_RESULT,
+      output: "This is not valid JSON",
     };
-    mockedAiInvoke.mockResolvedValueOnce(invalidResponse);
+    mockedExecuteSkill.mockResolvedValueOnce(invalidResult);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 
     const result = await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
 
+    // When output is a string that's not valid JSON, it should still attempt to parse
+    // and fall through to the error handler, returning null
     expect(result).toBeNull();
   });
 
   it("works with Gold futures input", async () => {
-    const goldLLMResponse = {
-      ...MOCK_LLM_RESPONSE,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant" as const,
-            content: JSON.stringify({
-              recommendation: "STRONG_BUY",
-              confidence: 85,
-              summary: "Gold is in a strong uptrend driven by safe-haven demand.",
-              bullCase: "Central bank buying and inflation hedging continue to support gold prices.",
-              bearCase: "Rising real yields could pressure gold if the Fed maintains hawkish stance.",
-              keyLevels: { support: 4700, resistance: 4850, target: 5000 },
-              riskLevel: "LOW",
-              catalysts: ["Fed rate decision", "Geopolitical tensions"],
-            }),
-          },
-          finish_reason: "stop",
-        },
-      ],
+    const goldSkillResult = {
+      ...MOCK_SKILL_RESULT,
+      output: {
+        recommendation: "STRONG_BUY",
+        confidence: 85,
+        summary: "Gold is in a strong uptrend driven by safe-haven demand.",
+        bullCase: "Central bank buying and inflation hedging continue to support gold prices.",
+        bearCase: "Rising real yields could pressure gold if the Fed maintains hawkish stance.",
+        keyLevels: { support: 4700, resistance: 4850, target: 5000 },
+        riskLevel: "LOW",
+        catalysts: ["Fed rate decision", "Geopolitical tensions"],
+      },
     };
-    mockedAiInvoke.mockResolvedValueOnce(goldLLMResponse);
+    mockedExecuteSkill.mockResolvedValueOnce(goldSkillResult);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);

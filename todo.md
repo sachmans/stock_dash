@@ -153,4 +153,22 @@
 - [x] Strip Manus vite plugin, debug collector, and hosting-specific config
 - [x] Update env.ts, package.json, and build scripts for standalone operation
 - [x] Run tests and verify clean standalone build — all 44 tests pass
-- [ ] Tag as SDDMini-KH/v1.0.0 and push to GitHub (in progress)
+- [x] Tag as SDDMini-KH/v1.0.0 and push to GitHub — done
+
+## V4.1: Skill Registration + Docker Deployment + Claude Runner Prompt
+- [x] Audit Core AI Backend skill/prompt registration API
+- [x] Create skills.yaml with 8 skill definitions (financial_analysis, 4 agents, moderator, sentiment_scorer, kora_chat)
+- [x] Create server/lib/skillLoader.ts — YAML parser that loads skill definitions at startup
+- [x] Create server/lib/skillAwareProvider.ts — executeSkill/executeChat with local prompt rendering + model routing
+- [x] Wire multiAgentAnalysis.ts to use executeSkill for each agent + moderator
+- [x] Wire sentimentNews.ts to use executeSkill for sentiment_scorer
+- [x] Wire routers.ts getAnalysis to use executeSkill for financial_analysis
+- [x] Wire routers.ts koraChat to use executeChat for kora_chat
+- [x] Configure model preference: llamacpp (Llama 3.3 / Gemma) primary, Groq fallback
+- [x] Create Dockerfile for standalone app (Node.js 22, multi-stage build)
+- [x] Create docker-compose.yml (app + MySQL 8.0)
+- [x] Create ENV_REFERENCE.md with all required env vars documented
+- [x] Create CLAUDE_RUNNER_PROMPT.md with full instructions for Claude on the runner
+- [x] Write vitest tests for skillLoader (YAML parsing, prompt rendering) — 10 tests pass
+- [x] Update stock.test.ts to mock executeSkill instead of aiInvoke — all 53 tests pass
+- [x] Push to GitHub with updated tag SDDMini-KH/v1.1.0

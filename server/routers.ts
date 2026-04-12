@@ -4,6 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { aiInvoke } from "./lib/aiProvider";
 import { getProviderStatus } from "./lib/aiProvider";
+import { executeSkill, executeChat } from "./lib/skillAwareProvider";
 import { cacheGet, cacheSet, CACHE_TTL } from "./cache";
 import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
 import { computeIndicators, generateDailyAnalysis, calcSMA } from "./dataEngine";
@@ -142,65 +143,19 @@ export const appRouter = router({
             console.warn('[Stock API] Progressive extraction failed, continuing without context:', err);
           }
 
-          const prompt = `You are a senior financial analyst AI. Analyze the following instrument and provide a structured investment analysis.
-
-INSTRUMENT DATA:
-- Symbol: ${input.symbol}
-- Name: ${input.name}
-- Current Price: ${input.currency || 'USD'} ${input.price.toFixed(3)}
-- Change: ${input.change >= 0 ? '+' : ''}${input.change.toFixed(3)} (${input.changePercent >= 0 ? '+' : ''}${input.changePercent.toFixed(2)}%)
-- Day Range: ${input.dayLow.toFixed(2)} — ${input.dayHigh.toFixed(2)}
-${input.fiftyTwoWeekHigh ? `- 52-Week High: ${input.fiftyTwoWeekHigh.toFixed(2)}` : ''}
-${input.fiftyTwoWeekLow ? `- 52-Week Low: ${input.fiftyTwoWeekLow.toFixed(2)}` : ''}
-${input.volume ? `- Volume: ${input.volume.toLocaleString()}` : ''}
-${input.previousClose ? `- Previous Close: ${input.previousClose.toFixed(3)}` : ''}
-- Exchange: ${input.exchange || 'Unknown'}
-${knowledgeContext}
-
-Provide your analysis as JSON with these exact fields.`;
-
-          const response = await aiInvoke({
-            messages: [
-              { role: "system", content: "You are a senior financial analyst. Provide concise, data-driven analysis. Always respond with valid JSON. Include specific price levels. If knowledge graph context is provided, incorporate past analysis patterns and known facts into your assessment." },
-              { role: "user", content: prompt },
-            ],
-            response_format: {
-              type: "json_schema",
-              json_schema: {
-                name: "stock_analysis",
-                strict: true,
-                schema: {
-                  type: "object",
-                  properties: {
-                    recommendation: { type: "string", description: "STRONG_BUY, BUY, HOLD, SELL, or STRONG_SELL" },
-                    confidence: { type: "number", description: "0-100" },
-                    summary: { type: "string", description: "2-3 sentence executive summary" },
-                    bullCase: { type: "string", description: "Key bullish argument" },
-                    bearCase: { type: "string", description: "Key bearish argument" },
-                    keyLevels: {
-                      type: "object",
-                      properties: {
-                        support: { type: "number" },
-                        resistance: { type: "number" },
-                        target: { type: "number" },
-                      },
-                      required: ["support", "resistance", "target"],
-                      additionalProperties: false,
-                    },
-                    riskLevel: { type: "string", description: "LOW, MEDIUM, HIGH, or VERY_HIGH" },
-                    catalysts: { type: "array", items: { type: "string" }, description: "2-3 catalysts" },
-                  },
-                  required: ["recommendation", "confidence", "summary", "bullCase", "bearCase", "keyLevels", "riskLevel", "catalysts"],
-                  additionalProperties: false,
-                },
-              },
-            },
+          // Use skill-aware provider for single-agent analysis
+          const skillResult = await executeSkill('stockdash.financial_analysis', {
+            symbol: input.symbol,
+            name: input.name,
+            price: input.price,
+            currency: input.currency || 'USD',
+            type: input.exchange?.includes('FX') ? 'forex' : 'stock',
+            knowledge_context: knowledgeContext || undefined,
           });
 
-          const content = response.choices[0]?.message?.content;
-          if (!content || typeof content !== 'string') return null;
-
-          const analysis = JSON.parse(content);
+          const analysis = typeof skillResult.output === 'string'
+            ? JSON.parse(skillResult.output)
+            : skillResult.output;
           const VALID_RECS = ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL'];
           const VALID_RISKS = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
 
@@ -518,8 +473,12 @@ Rules:
 
           messages.push({ role: 'user', content: input.message });
 
-          const response = await aiInvoke({ messages });
-          const reply = response?.choices?.[0]?.message?.content;
+          // Use skill-aware chat provider (Kora skill system prompt + conversation)
+          const chatResult = await executeChat(
+            messages.map(m => ({ role: m.role, content: m.content })),
+            { skillName: 'stockdash.kora_chat' }
+          );
+          const reply = chatResult.content;
 
           // Fire-and-forget: store the conversation as a Memory Vault episode
           const memVault = getMemoryVault();

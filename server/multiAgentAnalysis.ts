@@ -1,13 +1,15 @@
 /**
  * Multi-Agent AI Analysis System
  * Inspired by HKUDS/AI-Trader and TradingAgents-CN
- * 
+ *
  * Multiple AI "agents" analyze the same instrument from different perspectives,
  * then a moderator agent synthesizes their views into a final recommendation.
- * 
- * Now routes through the unified AI Provider (Core AI Backend → Manus Forge fallback).
+ *
+ * All prompts are managed via skills.yaml and executed through the
+ * skill-aware provider (remote skill execution → local prompt fallback).
  */
 
+import { executeSkill } from "./lib/skillAwareProvider";
 import { aiInvoke } from "./lib/aiProvider";
 
 /* ─── Types ─── */
@@ -15,7 +17,7 @@ import { aiInvoke } from "./lib/aiProvider";
 export interface AgentOpinion {
   agent: string;
   role: string;
-  stance: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  stance: "BULLISH" | "BEARISH" | "NEUTRAL";
   confidence: number;
   reasoning: string;
   keyPoints: string[];
@@ -27,7 +29,7 @@ export interface MultiAgentAnalysis {
     recommendation: string;
     confidence: number;
     summary: string;
-    agreementLevel: 'UNANIMOUS' | 'MAJORITY' | 'SPLIT' | 'DIVIDED';
+    agreementLevel: "UNANIMOUS" | "MAJORITY" | "SPLIT" | "DIVIDED";
   };
   debate: string;
   finalVerdict: {
@@ -61,233 +63,262 @@ interface AnalysisInput {
   dailyStrength?: number;
 }
 
-/* ─── Agent Prompts ─── */
+/* ─── Skill-to-Agent Mapping ─── */
 
-function buildAgentPrompt(role: string, input: AnalysisInput): string {
-  const baseData = `
-Instrument: ${input.name} (${input.symbol})
-Current Price: ${input.price} ${input.currency || 'USD'}
-Change: ${input.change > 0 ? '+' : ''}${input.change.toFixed(3)} (${input.changePercent > 0 ? '+' : ''}${input.changePercent.toFixed(2)}%)
-Day Range: ${input.dayLow} - ${input.dayHigh}
-52-Week Range: ${input.fiftyTwoWeekLow || 'N/A'} - ${input.fiftyTwoWeekHigh || 'N/A'}
-Volume: ${input.volume?.toLocaleString() || 'N/A'}
-Previous Close: ${input.previousClose || 'N/A'}
-Exchange: ${input.exchange || 'N/A'}
-${input.technicalSignals ? `Technical Signals: ${input.technicalSignals.join('; ')}` : ''}
-${input.dailyTrend ? `Daily Trend: ${input.dailyTrend} (Strength: ${input.dailyStrength}/100)` : ''}
-`;
-
-  const rolePrompts: Record<string, string> = {
-    technical: `You are a Technical Analyst agent. Analyze the following instrument PURELY from a technical analysis perspective. Focus on:
-- Price action patterns (support/resistance, trend lines, chart patterns)
-- Moving average analysis (SMA/EMA crossovers, golden/death crosses)
-- Momentum indicators (RSI, MACD, Stochastic)
-- Volume analysis and confirmation
-- Bollinger Bands and volatility assessment
-${baseData}`,
-
-    fundamental: `You are a Fundamental Analyst agent. Analyze the following instrument from a fundamental/macro perspective. Focus on:
-- Sector and industry trends
-- Macroeconomic factors affecting this asset
-- Supply/demand dynamics (especially for commodities)
-- Geopolitical risks and opportunities
-- Valuation relative to historical norms
-${baseData}`,
-
-    sentiment: `You are a Sentiment Analyst agent. Analyze the following instrument from a market sentiment perspective. Focus on:
-- Current market mood and investor positioning
-- News flow and media narrative
-- Institutional vs retail sentiment
-- Options flow and put/call ratios (if applicable)
-- Social media and analyst consensus shifts
-${baseData}`,
-
-    risk: `You are a Risk Manager agent. Analyze the following instrument from a risk management perspective. Focus on:
-- Volatility assessment (historical and implied)
-- Maximum drawdown scenarios
-- Correlation with broader market
-- Liquidity risk assessment
-- Position sizing recommendations
-- Key risk events on the horizon
-${baseData}`,
-  };
-
-  return rolePrompts[role] || rolePrompts.technical;
-}
-
-const AGENT_RESPONSE_FORMAT = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "agent_opinion",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        stance: { type: "string", enum: ["BULLISH", "BEARISH", "NEUTRAL"], description: "Overall stance" },
-        confidence: { type: "integer", description: "Confidence level 0-100" },
-        reasoning: { type: "string", description: "2-3 sentence reasoning" },
-        keyPoints: {
-          type: "array",
-          items: { type: "string" },
-          description: "3-5 key bullet points supporting the stance",
-        },
-      },
-      required: ["stance", "confidence", "reasoning", "keyPoints"],
-      additionalProperties: false,
-    },
+const AGENT_SKILLS: Record<string, { skillName: string; displayName: string }> = {
+  technical: {
+    skillName: "stockdash.agent_technical",
+    displayName: "Technical Analyst",
+  },
+  fundamental: {
+    skillName: "stockdash.agent_fundamental",
+    displayName: "Fundamental Analyst",
+  },
+  sentiment: {
+    skillName: "stockdash.agent_sentiment",
+    displayName: "Sentiment Analyst",
+  },
+  risk: {
+    skillName: "stockdash.agent_risk",
+    displayName: "Risk Manager",
   },
 };
 
-const MODERATOR_RESPONSE_FORMAT = {
-  type: "json_schema" as const,
-  json_schema: {
-    name: "moderator_verdict",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        recommendation: {
-          type: "string",
-          enum: ["STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"],
-          description: "Final recommendation",
-        },
-        confidence: { type: "integer", description: "Overall confidence 0-100" },
-        summary: { type: "string", description: "2-3 sentence executive summary" },
-        agreementLevel: {
-          type: "string",
-          enum: ["UNANIMOUS", "MAJORITY", "SPLIT", "DIVIDED"],
-          description: "How much the agents agree",
-        },
-        debate: { type: "string", description: "Summary of where agents agree and disagree" },
-        action: { type: "string", description: "Specific action recommendation" },
-        buyLevel: { type: "number", description: "Recommended entry price" },
-        stopLoss: { type: "number", description: "Stop loss price" },
-        targetPrice: { type: "number", description: "Target price" },
-        timeHorizon: { type: "string", description: "Recommended time horizon (e.g., '1-2 weeks', '1-3 months')" },
-      },
-      required: [
-        "recommendation", "confidence", "summary", "agreementLevel",
-        "debate", "action", "buyLevel", "stopLoss", "targetPrice", "timeHorizon",
-      ],
-      additionalProperties: false,
-    },
-  },
-};
+/* ─── Agent Execution via Skills ─── */
 
-/* ─── Agent Execution ─── */
+async function runAgent(
+  role: string,
+  roleName: string,
+  input: AnalysisInput,
+): Promise<AgentOpinion> {
+  const agentConfig = AGENT_SKILLS[role];
 
-async function runAgent(role: string, roleName: string, input: AnalysisInput): Promise<AgentOpinion> {
   try {
-    const prompt = buildAgentPrompt(role, input);
-    const response = await aiInvoke({
-      messages: [
-        { role: "system", content: prompt },
-        { role: "user", content: `Provide your ${roleName} analysis of ${input.symbol}. Be specific and data-driven.` },
-      ],
-      response_format: AGENT_RESPONSE_FORMAT,
-    });
+    // Build knowledge context from input data
+    const knowledgeContext = [
+      `Change: ${input.change > 0 ? "+" : ""}${input.change.toFixed(3)} (${input.changePercent > 0 ? "+" : ""}${input.changePercent.toFixed(2)}%)`,
+      `Day Range: ${input.dayLow} - ${input.dayHigh}`,
+      `52-Week Range: ${input.fiftyTwoWeekLow || "N/A"} - ${input.fiftyTwoWeekHigh || "N/A"}`,
+      `Volume: ${input.volume?.toLocaleString() || "N/A"}`,
+      `Previous Close: ${input.previousClose || "N/A"}`,
+      `Exchange: ${input.exchange || "N/A"}`,
+      input.technicalSignals
+        ? `Technical Signals: ${input.technicalSignals.join("; ")}`
+        : "",
+      input.dailyTrend
+        ? `Daily Trend: ${input.dailyTrend} (Strength: ${input.dailyStrength}/100)`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-    const content = response?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty LLM response");
+    if (agentConfig) {
+      // Use skill-aware provider
+      const result = await executeSkill(agentConfig.skillName, {
+        symbol: input.symbol,
+        name: input.name,
+        price: input.price,
+        currency: input.currency || "USD",
+        knowledge_context: knowledgeContext,
+      });
 
-    const parsed = JSON.parse(content as string);
-    return {
-      agent: roleName,
-      role,
-      stance: ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(parsed.stance) ? parsed.stance : 'NEUTRAL',
-      confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
-      reasoning: parsed.reasoning || 'Analysis unavailable',
-      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.slice(0, 5) : [],
-    };
+      const output =
+        typeof result.output === "string"
+          ? safeJsonParse(result.output)
+          : result.output;
+
+      // Map skill output to AgentOpinion
+      const stance = mapStance(
+        (output as any)?.signal ||
+          (output as any)?.outlook ||
+          (output as any)?.sentiment ||
+          (output as any)?.riskLevel ||
+          "NEUTRAL",
+      );
+
+      return {
+        agent: roleName,
+        role,
+        stance,
+        confidence: Math.max(
+          0,
+          Math.min(100, Math.round(((output as any)?.confidence || 0.5) * 100)),
+        ),
+        reasoning: (output as any)?.summary || "Analysis completed via skill.",
+        keyPoints: extractKeyPoints(output as Record<string, unknown>),
+      };
+    }
+
+    // Fallback: use direct aiInvoke with hardcoded prompt (should not happen)
+    return await runAgentFallback(role, roleName, input, knowledgeContext);
   } catch (err) {
     console.error(`[MultiAgent] ${roleName} agent failed:`, err);
     return {
       agent: roleName,
       role,
-      stance: 'NEUTRAL',
+      stance: "NEUTRAL",
       confidence: 30,
       reasoning: `${roleName} analysis could not be completed due to an error.`,
-      keyPoints: ['Analysis unavailable'],
+      keyPoints: ["Analysis unavailable"],
     };
   }
 }
 
+/**
+ * Fallback for agents without a registered skill — uses direct aiInvoke.
+ */
+async function runAgentFallback(
+  role: string,
+  roleName: string,
+  input: AnalysisInput,
+  knowledgeContext: string,
+): Promise<AgentOpinion> {
+  const prompt = `You are a ${roleName}. Analyze ${input.name} (${input.symbol}) at ${input.price} ${input.currency || "USD"}.
+
+${knowledgeContext}
+
+Respond with JSON: { "stance": "BULLISH|BEARISH|NEUTRAL", "confidence": 0-100, "reasoning": "...", "keyPoints": ["..."] }`;
+
+  const response = await aiInvoke({
+    messages: [
+      { role: "system", content: prompt },
+      {
+        role: "user",
+        content: `Provide your ${roleName} analysis of ${input.symbol}. Be specific and data-driven.`,
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "agent_opinion",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            stance: {
+              type: "string",
+              enum: ["BULLISH", "BEARISH", "NEUTRAL"],
+              description: "Overall stance",
+            },
+            confidence: {
+              type: "integer",
+              description: "Confidence level 0-100",
+            },
+            reasoning: {
+              type: "string",
+              description: "2-3 sentence reasoning",
+            },
+            keyPoints: {
+              type: "array",
+              items: { type: "string" },
+              description: "3-5 key bullet points supporting the stance",
+            },
+          },
+          required: ["stance", "confidence", "reasoning", "keyPoints"],
+          additionalProperties: false,
+        },
+      },
+    },
+  });
+
+  const content = response?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("Empty LLM response");
+
+  const parsed = JSON.parse(content as string);
+  return {
+    agent: roleName,
+    role,
+    stance: ["BULLISH", "BEARISH", "NEUTRAL"].includes(parsed.stance)
+      ? parsed.stance
+      : "NEUTRAL",
+    confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
+    reasoning: parsed.reasoning || "Analysis unavailable",
+    keyPoints: Array.isArray(parsed.keyPoints)
+      ? parsed.keyPoints.slice(0, 5)
+      : [],
+  };
+}
+
+/* ─── Moderator via Skill ─── */
+
 async function runModerator(
   agents: AgentOpinion[],
   input: AnalysisInput,
-): Promise<MultiAgentAnalysis['consensus'] & MultiAgentAnalysis['finalVerdict'] & { debate: string }> {
+): Promise<
+  MultiAgentAnalysis["consensus"] &
+    MultiAgentAnalysis["finalVerdict"] & { debate: string }
+> {
   try {
     const agentSummaries = agents
       .map(
         (a) =>
-          `**${a.agent}** (${a.stance}, ${a.confidence}% confidence): ${a.reasoning}\nKey points: ${a.keyPoints.join('; ')}`,
+          `**${a.agent}** (${a.stance}, ${a.confidence}% confidence): ${a.reasoning}\nKey points: ${a.keyPoints.join("; ")}`,
       )
-      .join('\n\n');
+      .join("\n\n");
 
-    const response = await aiInvoke({
-      messages: [
-        {
-          role: "system",
-          content: `You are the Moderator agent. You have received analysis from 4 specialist agents about ${input.name} (${input.symbol}) at ${input.price} ${input.currency || 'USD'}. Your job is to:
-1. Weigh each agent's opinion based on their confidence and reasoning quality
-2. Identify areas of agreement and disagreement
-3. Synthesize a final recommendation with specific price levels
-4. The buy level should be near the current price if bullish, or lower if bearish
-5. Stop loss should protect against 2-5% downside
-6. Target should reflect a realistic 1-3x risk/reward ratio`,
-        },
-        {
-          role: "user",
-          content: `Here are the agent analyses:\n\n${agentSummaries}\n\nProvide your moderator verdict.`,
-        },
-      ],
-      response_format: MODERATOR_RESPONSE_FORMAT,
+    // Try skill-based execution first
+    const result = await executeSkill("stockdash.agent_moderator", {
+      symbol: input.symbol,
+      name: input.name,
+      price: input.price,
+      currency: input.currency || "USD",
+      technical_opinion: formatAgentForModerator(agents[0]),
+      fundamental_opinion: formatAgentForModerator(agents[1]),
+      sentiment_opinion: formatAgentForModerator(agents[2]),
+      risk_opinion: formatAgentForModerator(agents[3]),
     });
 
-    const content = response?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty moderator response");
-
-    const parsed = JSON.parse(content as string);
+    const output =
+      typeof result.output === "string"
+        ? safeJsonParse(result.output)
+        : result.output;
+    const o = output as Record<string, unknown>;
 
     return {
-      recommendation: parsed.recommendation || 'HOLD',
-      confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
-      summary: parsed.summary || 'Analysis complete.',
-      agreementLevel: parsed.agreementLevel || 'SPLIT',
-      debate: parsed.debate || 'No debate summary available.',
-      action: parsed.action || 'Hold current position',
-      buyLevel: parsed.buyLevel || input.price * 0.98,
-      stopLoss: parsed.stopLoss || input.price * 0.95,
-      targetPrice: parsed.targetPrice || input.price * 1.05,
+      recommendation: String(o.recommendation || "HOLD"),
+      confidence: Math.max(
+        0,
+        Math.min(100, Math.round(Number(o.confidence || 0.5) * 100)),
+      ),
+      summary: String(o.summary || "Analysis complete."),
+      agreementLevel: mapAgreement(String(o.consensus || "PARTIAL")),
+      debate: String(o.dissenting || o.debate || "No debate summary available."),
+      action: String(o.action || o.recommendation || "Hold current position"),
+      buyLevel: Number((o.targets as any)?.entry) || input.price * 0.98,
+      stopLoss: Number((o.targets as any)?.stopLoss) || input.price * 0.95,
+      targetPrice:
+        Number((o.targets as any)?.takeProfit) || input.price * 1.05,
       riskRewardRatio: 0,
-      timeHorizon: parsed.timeHorizon || '1-2 weeks',
+      timeHorizon: String(o.timeframe || "1-2 weeks"),
     };
   } catch (err) {
-    console.error('[MultiAgent] Moderator failed:', err);
+    console.error("[MultiAgent] Moderator failed:", err);
     return {
-      recommendation: 'HOLD',
+      recommendation: "HOLD",
       confidence: 40,
-      summary: 'Multi-agent analysis could not reach a consensus.',
-      agreementLevel: 'DIVIDED',
-      debate: 'Analysis incomplete due to an error.',
-      action: 'Hold and monitor',
+      summary: "Multi-agent analysis could not reach a consensus.",
+      agreementLevel: "DIVIDED",
+      debate: "Analysis incomplete due to an error.",
+      action: "Hold and monitor",
       buyLevel: input.price * 0.98,
       stopLoss: input.price * 0.95,
       targetPrice: input.price * 1.05,
       riskRewardRatio: 1.67,
-      timeHorizon: '1-2 weeks',
+      timeHorizon: "1-2 weeks",
     };
   }
 }
 
 /* ─── Main Entry Point ─── */
 
-export async function runMultiAgentAnalysis(input: AnalysisInput): Promise<MultiAgentAnalysis> {
+export async function runMultiAgentAnalysis(
+  input: AnalysisInput,
+): Promise<MultiAgentAnalysis> {
   const [technical, fundamental, sentiment, risk] = await Promise.all([
-    runAgent('technical', 'Technical Analyst', input),
-    runAgent('fundamental', 'Fundamental Analyst', input),
-    runAgent('sentiment', 'Sentiment Analyst', input),
-    runAgent('risk', 'Risk Manager', input),
+    runAgent("technical", "Technical Analyst", input),
+    runAgent("fundamental", "Fundamental Analyst", input),
+    runAgent("sentiment", "Sentiment Analyst", input),
+    runAgent("risk", "Risk Manager", input),
   ]);
 
   const agents = [technical, fundamental, sentiment, risk];
@@ -322,4 +353,80 @@ export async function runMultiAgentAnalysis(input: AnalysisInput): Promise<Multi
     analyzedAt: Date.now(),
     symbol: input.symbol,
   };
+}
+
+/* ─── Helpers ─── */
+
+function safeJsonParse(text: string): Record<string, unknown> {
+  try {
+    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+    return JSON.parse(jsonStr);
+  } catch {
+    return { summary: text };
+  }
+}
+
+function mapStance(
+  raw: string,
+): "BULLISH" | "BEARISH" | "NEUTRAL" {
+  const upper = String(raw).toUpperCase();
+  if (
+    upper.includes("BULL") ||
+    upper.includes("POSITIVE") ||
+    upper === "LOW"
+  )
+    return "BULLISH";
+  if (
+    upper.includes("BEAR") ||
+    upper.includes("NEGATIVE") ||
+    upper === "HIGH" ||
+    upper === "EXTREME"
+  )
+    return "BEARISH";
+  return "NEUTRAL";
+}
+
+function mapAgreement(
+  raw: string,
+): "UNANIMOUS" | "MAJORITY" | "SPLIT" | "DIVIDED" {
+  const upper = String(raw).toUpperCase();
+  if (upper.includes("AGREE") || upper === "UNANIMOUS") return "UNANIMOUS";
+  if (upper.includes("PARTIAL") || upper === "MAJORITY") return "MAJORITY";
+  if (upper.includes("DISAGREE") || upper === "DIVIDED") return "DIVIDED";
+  return "SPLIT";
+}
+
+function formatAgentForModerator(agent: AgentOpinion): string {
+  return `${agent.stance} (${agent.confidence}% confidence): ${agent.reasoning}\nKey points: ${agent.keyPoints.join("; ")}`;
+}
+
+function extractKeyPoints(output: Record<string, unknown>): string[] {
+  // Try various field names that skills might return
+  const candidates = [
+    output.keyPoints,
+    output.key_points,
+    output.patterns,
+    output.macroFactors,
+    output.drivers,
+    output.correlationRisks,
+    output.tailRisks,
+  ];
+
+  for (const c of candidates) {
+    if (Array.isArray(c) && c.length > 0) {
+      return c.filter((x) => typeof x === "string").slice(0, 5);
+    }
+  }
+
+  // Build key points from available fields
+  const points: string[] = [];
+  if (output.summary) points.push(String(output.summary));
+  if (output.valuation) points.push(`Valuation: ${output.valuation}`);
+  if (output.riskLevel) points.push(`Risk Level: ${output.riskLevel}`);
+  if (output.socialSignals) points.push(String(output.socialSignals));
+  if (output.positionSizeAdvice) points.push(String(output.positionSizeAdvice));
+  if (output.maxDrawdown) points.push(`Max Drawdown: ${output.maxDrawdown}`);
+
+  return points.length > 0 ? points.slice(0, 5) : ["Analysis completed"];
 }
