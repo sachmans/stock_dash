@@ -7,9 +7,19 @@ vi.mock("./_core/dataApi", () => ({
   callDataApi: vi.fn(),
 }));
 
-// Mock the invokeLLM function
-vi.mock("./_core/llm", () => ({
-  invokeLLM: vi.fn(),
+// Mock the unified AI provider (Core AI Backend)
+vi.mock("./lib/aiProvider", () => ({
+  aiInvoke: vi.fn(),
+  getProviderStatus: vi.fn().mockReturnValue({
+    activeProvider: 'core_ai_backend',
+    healthy: true,
+    consecutiveFailures: 0,
+    lastSuccess: Date.now(),
+    lastFailure: null,
+    coreAiUrl: 'https://ai.s9n.dxb-gw.basanti.ai',
+  }),
+  aiGenerate: vi.fn(),
+  aiHealthCheck: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
 // Mock the Yahoo fallback to prevent real HTTP calls and timeouts
@@ -18,11 +28,49 @@ vi.mock("./yahooFallback", () => ({
   fetchYahooNews: vi.fn().mockResolvedValue(null),
 }));
 
+// Mock CognitionOS modules to prevent real HTTP calls
+vi.mock("./lib/cognitionOSClient", () => ({
+  getCognitionOS: vi.fn().mockReturnValue({
+    vectorSearch: vi.fn().mockResolvedValue([]),
+    createConcept: vi.fn().mockResolvedValue({}),
+    createDocument: vi.fn().mockResolvedValue({}),
+    health: vi.fn().mockResolvedValue({ status: 'ok' }),
+  }),
+}));
+
+vi.mock("./lib/memoryVaultClient", () => ({
+  getMemoryVault: vi.fn().mockReturnValue({
+    search: vi.fn().mockResolvedValue({ episodes: [] }),
+    createEpisode: vi.fn().mockResolvedValue({}),
+    createFacts: vi.fn().mockResolvedValue({}),
+    health: vi.fn().mockResolvedValue({ healthy: true }),
+  }),
+}));
+
+vi.mock("./lib/progressiveExtraction", () => ({
+  extractContext: vi.fn().mockResolvedValue({ formattedContext: '', concepts: [], decisions: [], episodes: [] }),
+  getKnowledgeStatus: vi.fn().mockResolvedValue({ conceptsKnown: 0, pastDecisions: 0, episodesStored: 0 }),
+}));
+
+vi.mock("./lib/tradingDomainSetup", () => ({
+  setupTradingDomain: vi.fn().mockResolvedValue({ success: true, conceptsCreated: 0, relationshipsCreated: 0, errors: [] }),
+  getDomainStatus: vi.fn().mockResolvedValue({ healthy: true, services: {}, graphReady: false }),
+}));
+
+vi.mock("./lib/newsIngestion", () => ({
+  ingestScoredNews: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./lib/recommendationIngestion", () => ({
+  ingestRecommendation: vi.fn().mockResolvedValue(undefined),
+  recallPreviousRecommendations: vi.fn().mockResolvedValue([]),
+}));
+
 import { callDataApi } from "./_core/dataApi";
-import { invokeLLM } from "./_core/llm";
+import { aiInvoke } from "./lib/aiProvider";
 import { cacheClear } from "./cache";
 const mockedCallDataApi = vi.mocked(callDataApi);
-const mockedInvokeLLM = vi.mocked(invokeLLM);
+const mockedAiInvoke = vi.mocked(aiInvoke);
 
 function createPublicContext(): TrpcContext {
   return {
@@ -432,9 +480,9 @@ describe("stock.getAnalysis", () => {
   };
 
   const MOCK_LLM_RESPONSE = {
-    id: "test-id",
+    id: "coreai-test",
     created: Date.now(),
-    model: "gemini-2.5-flash",
+    model: "llama-3.3-70b-versatile",
     choices: [
       {
         index: 0,
@@ -470,7 +518,7 @@ describe("stock.getAnalysis", () => {
   };
 
   it("returns structured analysis for a valid instrument", async () => {
-    mockedInvokeLLM.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+    mockedAiInvoke.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -490,16 +538,16 @@ describe("stock.getAnalysis", () => {
     expect(result!.analyzedAt).toBeDefined();
   });
 
-  it("passes correct parameters to invokeLLM", async () => {
-    mockedInvokeLLM.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
+  it("passes correct parameters to aiInvoke (Core AI Backend)", async () => {
+    mockedAiInvoke.mockResolvedValueOnce(MOCK_LLM_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 
     await caller.stock.getAnalysis(MOCK_ANALYSIS_INPUT);
 
-    expect(mockedInvokeLLM).toHaveBeenCalledTimes(1);
-    const callArgs = mockedInvokeLLM.mock.calls[0][0];
+    expect(mockedAiInvoke).toHaveBeenCalledTimes(1);
+    const callArgs = mockedAiInvoke.mock.calls[0][0];
     expect(callArgs.messages).toHaveLength(2);
     expect(callArgs.messages[0].role).toBe("system");
     expect(callArgs.messages[1].role).toBe("user");
@@ -507,8 +555,8 @@ describe("stock.getAnalysis", () => {
     expect((callArgs.response_format as any).type).toBe("json_schema");
   });
 
-  it("returns null when LLM call fails", async () => {
-    mockedInvokeLLM.mockRejectedValueOnce(new Error("LLM unavailable"));
+  it("returns null when Core AI Backend call fails", async () => {
+    mockedAiInvoke.mockRejectedValueOnce(new Error("Core AI Backend failed after retry"));
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -532,7 +580,7 @@ describe("stock.getAnalysis", () => {
         },
       ],
     };
-    mockedInvokeLLM.mockResolvedValueOnce(invalidResponse);
+    mockedAiInvoke.mockResolvedValueOnce(invalidResponse);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -565,7 +613,7 @@ describe("stock.getAnalysis", () => {
         },
       ],
     };
-    mockedInvokeLLM.mockResolvedValueOnce(goldLLMResponse);
+    mockedAiInvoke.mockResolvedValueOnce(goldLLMResponse);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);

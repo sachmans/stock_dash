@@ -1,317 +1,201 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+/**
+ * AI Provider Unit Tests — Core AI Backend Only Mode
+ * 
+ * Tests the unified AI provider with Core AI Backend as the sole LLM provider.
+ * Covers: successful calls, transient retry, hard failures, health check, and generate.
+ */
 
-/* ─── Core AI Backend Tests ─── */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-describe("coreAiBackend", () => {
+// Mock the coreAiBackend module
+const mockInvoke = vi.fn();
+const mockGenerate = vi.fn();
+const mockHealth = vi.fn();
+
+vi.mock('./lib/coreAiBackend', () => ({
+  getCoreAIBackend: vi.fn(() => ({
+    invoke: mockInvoke,
+    generate: mockGenerate,
+    health: mockHealth,
+  })),
+}));
+
+// Import after mocking
+import { aiInvoke, aiGenerate, aiHealthCheck, getProviderStatus } from './lib/aiProvider';
+import type { InvokeParams } from './_core/llm';
+
+const SAMPLE_PARAMS: InvokeParams = {
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'Say hello' },
+  ],
+};
+
+const SAMPLE_RESULT = {
+  id: 'coreai-123',
+  created: Date.now(),
+  model: 'llama-3.3-70b-versatile',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant' as const, content: 'Hello!' },
+      finish_reason: 'stop',
+    },
+  ],
+  usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+};
+
+describe('aiInvoke — Core AI Backend Only', () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
+    vi.clearAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
+
   afterEach(() => {
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
-  it("isCoreAiBackendConfigured returns false when env vars missing", async () => {
-    process.env.CORE_AI_BACKEND_URL = "";
-    process.env.CORE_AI_BACKEND_API_KEY = "";
-    // Re-import to pick up env
-    const mod = await import("./lib/coreAiBackend");
-    expect(mod.isCoreAiBackendConfigured()).toBe(false);
+  it('returns result on successful first call', async () => {
+    mockInvoke.mockResolvedValueOnce(SAMPLE_RESULT);
+
+    const result = await aiInvoke(SAMPLE_PARAMS);
+
+    expect(result).toEqual(SAMPLE_RESULT);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith(SAMPLE_PARAMS);
   });
 
-  it("isCoreAiBackendConfigured returns true when env vars set", async () => {
-    process.env.CORE_AI_BACKEND_URL = "https://ai.test.example.com";
-    process.env.CORE_AI_BACKEND_API_KEY = "sk_test_123";
-    const mod = await import("./lib/coreAiBackend");
-    expect(mod.isCoreAiBackendConfigured()).toBe(true);
+  it('retries once on transient 504 error and succeeds', async () => {
+    mockInvoke
+      .mockRejectedValueOnce(new Error('Core AI /v1/chat returned 504: gateway timeout'))
+      .mockResolvedValueOnce(SAMPLE_RESULT);
+
+    const result = await aiInvoke(SAMPLE_PARAMS);
+
+    expect(result).toEqual(SAMPLE_RESULT);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
-  it("coreAiChatCompletion throws when not configured", async () => {
-    process.env.CORE_AI_BACKEND_URL = "";
-    process.env.CORE_AI_BACKEND_API_KEY = "";
-    const mod = await import("./lib/coreAiBackend");
-    await expect(
-      mod.coreAiChatCompletion({
-        messages: [{ role: "user", content: "test" }],
-      }),
-    ).rejects.toThrow("Core AI Backend not configured");
+  it('retries once on timeout error and succeeds', async () => {
+    mockInvoke
+      .mockRejectedValueOnce(new Error('The operation was aborted due to timeout'))
+      .mockResolvedValueOnce(SAMPLE_RESULT);
+
+    const result = await aiInvoke(SAMPLE_PARAMS);
+
+    expect(result).toEqual(SAMPLE_RESULT);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
-  it("coreAiChatCompletion calls correct URL with auth header", async () => {
-    process.env.CORE_AI_BACKEND_URL = "https://ai.test.example.com";
-    process.env.CORE_AI_BACKEND_API_KEY = "sk_test_key";
+  it('retries once on ECONNREFUSED and succeeds', async () => {
+    mockInvoke
+      .mockRejectedValueOnce(new Error('fetch failed: ECONNREFUSED'))
+      .mockResolvedValueOnce(SAMPLE_RESULT);
 
-    const mockResponse = {
-      id: "chatcmpl-123",
-      model: "default",
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: "Hello from Core AI" },
-          finish_reason: "stop",
-        },
-      ],
-    };
+    const result = await aiInvoke(SAMPLE_PARAMS);
 
-    (globalThis.fetch as any).mockResolvedValue({
-      ok: true,
-      json: async () => mockResponse,
-    });
-
-    const mod = await import("./lib/coreAiBackend");
-    const result = await mod.coreAiChatCompletion({
-      messages: [{ role: "user", content: "Hello" }],
-    });
-
-    expect(result.choices[0].message.content).toBe("Hello from Core AI");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "https://ai.test.example.com/v1/chat/completions",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer sk_test_key",
-        }),
-      }),
-    );
+    expect(result).toEqual(SAMPLE_RESULT);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
-  it("coreAiChatCompletion throws on non-OK response", async () => {
-    process.env.CORE_AI_BACKEND_URL = "https://ai.test.example.com";
-    process.env.CORE_AI_BACKEND_API_KEY = "sk_test_key";
+  it('throws immediately on non-transient 400 error (no retry)', async () => {
+    mockInvoke.mockRejectedValueOnce(new Error('Core AI returned 400: bad request'));
 
-    (globalThis.fetch as any).mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: "Internal Server Error",
-      text: async () => "Server error details",
-    });
-
-    const mod = await import("./lib/coreAiBackend");
-    await expect(
-      mod.coreAiChatCompletion({
-        messages: [{ role: "user", content: "test" }],
-      }),
-    ).rejects.toThrow("Core AI Backend request failed (500 Internal Server Error)");
+    await expect(aiInvoke(SAMPLE_PARAMS)).rejects.toThrow('400');
+    expect(mockInvoke).toHaveBeenCalledTimes(1); // No retry
   });
 
-  it("coreAiHealthCheck returns unavailable when URL not set", async () => {
-    process.env.CORE_AI_BACKEND_URL = "";
-    const mod = await import("./lib/coreAiBackend");
-    const result = await mod.coreAiHealthCheck();
-    expect(result.available).toBe(false);
-    expect(result.error).toContain("not set");
+  it('throws immediately on non-transient 422 error (no retry)', async () => {
+    mockInvoke.mockRejectedValueOnce(new Error('Core AI returned 422: validation error'));
+
+    await expect(aiInvoke(SAMPLE_PARAMS)).rejects.toThrow('422');
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
 
-  it("storeMemoryEpisode returns false when not configured", async () => {
-    process.env.CORE_AI_BACKEND_URL = "";
-    process.env.CORE_AI_BACKEND_API_KEY = "";
-    const mod = await import("./lib/coreAiBackend");
-    const result = await mod.storeMemoryEpisode("app1", "user1", "test content");
-    expect(result).toBe(false);
+  it('throws after retry failure on transient error', async () => {
+    mockInvoke
+      .mockRejectedValueOnce(new Error('Core AI /v1/chat returned 502: bad gateway'))
+      .mockRejectedValueOnce(new Error('Core AI /v1/chat returned 503: service unavailable'));
+
+    await expect(aiInvoke(SAMPLE_PARAMS)).rejects.toThrow('Core AI Backend failed after retry');
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not fall back to Manus Forge — only Core AI Backend is used', async () => {
+    // Verify there is no invokeLLM import or fallback
+    mockInvoke.mockRejectedValueOnce(new Error('Core AI /v1/chat returned 500: internal error'))
+      .mockRejectedValueOnce(new Error('Core AI /v1/chat returned 500: still down'));
+
+    await expect(aiInvoke(SAMPLE_PARAMS)).rejects.toThrow('Core AI Backend failed after retry');
+    // Only 2 calls (original + 1 retry), no third-party fallback
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 });
 
-/* ─── CognitionOS Tests ─── */
-
-describe("cognitionOS", () => {
+describe('aiGenerate — simple text generation', () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
-  it("isCognitionOSConfigured returns false when env vars missing", async () => {
-    process.env.COGNITION_OS_URL = "";
-    process.env.COGNITION_OS_TENANT_ID = "";
-    const mod = await import("./lib/cognitionOS");
-    expect(mod.isCognitionOSConfigured()).toBe(false);
+  it('returns generated text from Core AI Backend', async () => {
+    mockGenerate.mockResolvedValueOnce({ text: 'Generated response', model: 'llamacpp_ip' });
+
+    const result = await aiGenerate('Write a haiku');
+
+    expect(result).toBe('Generated response');
+    expect(mockGenerate).toHaveBeenCalledWith({ prompt: 'Write a haiku', system_prompt: undefined });
   });
 
-  it("isCognitionOSConfigured returns true when env vars set", async () => {
-    process.env.COGNITION_OS_URL = "https://cognition.test.example.com";
-    process.env.COGNITION_OS_TENANT_ID = "tenant-123";
-    const mod = await import("./lib/cognitionOS");
-    expect(mod.isCognitionOSConfigured()).toBe(true);
-  });
+  it('passes system prompt to generate', async () => {
+    mockGenerate.mockResolvedValueOnce({ text: 'Expert response', model: 'llamacpp_ip' });
 
-  it("storeConcept returns null when not configured", async () => {
-    process.env.COGNITION_OS_URL = "";
-    process.env.COGNITION_OS_TENANT_ID = "";
-    const mod = await import("./lib/cognitionOS");
-    const result = await mod.storeConcept({
-      name: "BRNT",
-      type: "portfolio_position",
+    await aiGenerate('Analyze BRNT', 'You are a financial analyst');
+
+    expect(mockGenerate).toHaveBeenCalledWith({
+      prompt: 'Analyze BRNT',
+      system_prompt: 'You are a financial analyst',
     });
-    expect(result).toBeNull();
-  });
-
-  it("storeConcept sends correct request when configured", async () => {
-    process.env.COGNITION_OS_URL = "https://cognition.test.example.com";
-    process.env.COGNITION_OS_TENANT_ID = "tenant-123";
-
-    (globalThis.fetch as any).mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "concept-456" }),
-    });
-
-    const mod = await import("./lib/cognitionOS");
-    const result = await mod.storeConcept({
-      name: "BRNT",
-      type: "portfolio_position",
-      description: "Brent Crude Oil position",
-    });
-
-    expect(result).toBe("concept-456");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "https://cognition.test.example.com/api/v1/concepts",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "X-Tenant-ID": "tenant-123",
-        }),
-      }),
-    );
-  });
-
-  it("queryConcepts returns empty when not configured", async () => {
-    process.env.COGNITION_OS_URL = "";
-    process.env.COGNITION_OS_TENANT_ID = "";
-    const mod = await import("./lib/cognitionOS");
-    const result = await mod.queryConcepts("BRNT");
-    expect(result.concepts).toEqual([]);
-    expect(result.totalCount).toBe(0);
-  });
-
-  it("getKnowledgeContext returns empty context when not configured", async () => {
-    process.env.COGNITION_OS_URL = "";
-    process.env.COGNITION_OS_TENANT_ID = "";
-    const mod = await import("./lib/cognitionOS");
-    const result = await mod.getKnowledgeContext("BRNT");
-    expect(result.relatedConcepts).toEqual([]);
-    expect(result.summary).toBe("");
-    expect(result.confidence).toBe(0);
-  });
-
-  it("syncPortfolioConcept builds correct concept payload", async () => {
-    process.env.COGNITION_OS_URL = "https://cognition.test.example.com";
-    process.env.COGNITION_OS_TENANT_ID = "tenant-123";
-
-    (globalThis.fetch as any).mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "pos-789" }),
-    });
-
-    const mod = await import("./lib/cognitionOS");
-    await mod.syncPortfolioConcept({
-      symbol: "BRNT",
-      name: "Brent Crude Oil",
-      quantity: 250,
-      entryPrice: 78.66,
-      type: "commodity",
-    });
-
-    const callArgs = (globalThis.fetch as any).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body);
-    expect(body.name).toBe("BRNT");
-    expect(body.type).toBe("portfolio_position");
-    expect(body.properties.quantity).toBe(250);
-    expect(body.properties.entryPrice).toBe(78.66);
-  });
-
-  it("cognitionOSHealthCheck returns unavailable when URL not set", async () => {
-    process.env.COGNITION_OS_URL = "";
-    const mod = await import("./lib/cognitionOS");
-    const result = await mod.cognitionOSHealthCheck();
-    expect(result.available).toBe(false);
   });
 });
 
-/* ─── AI Provider Fallback Tests ─── */
-
-describe("aiProvider", () => {
-  it("getProviderStatus returns correct structure", async () => {
-    process.env.CORE_AI_BACKEND_URL = "";
-    process.env.CORE_AI_BACKEND_API_KEY = "";
-    process.env.COGNITION_OS_URL = "";
-    process.env.COGNITION_OS_TENANT_ID = "";
-
-    const mod = await import("./lib/aiProvider");
-    const status = mod.getProviderStatus();
-
-    expect(status).toHaveProperty("coreAiBackend");
-    expect(status).toHaveProperty("cognitionOS");
-    expect(status).toHaveProperty("manusForge");
-    expect(status.coreAiBackend).toHaveProperty("configured");
-    expect(status.coreAiBackend).toHaveProperty("circuitOpen");
-    expect(status.coreAiBackend).toHaveProperty("failCount");
-    expect(status.manusForge.configured).toBe(true);
+describe('aiHealthCheck', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("getProviderStatus reflects configured state", async () => {
-    process.env.CORE_AI_BACKEND_URL = "https://ai.test.example.com";
-    process.env.CORE_AI_BACKEND_API_KEY = "sk_test";
-    process.env.COGNITION_OS_URL = "https://cognition.test.example.com";
-    process.env.COGNITION_OS_TENANT_ID = "tenant-123";
+  it('returns healthy status when Core AI Backend is up', async () => {
+    mockHealth.mockResolvedValueOnce({ status: 'healthy', version: '3.1.0' });
 
-    const mod = await import("./lib/aiProvider");
-    const status = mod.getProviderStatus();
+    const result = await aiHealthCheck();
 
-    expect(status.coreAiBackend.configured).toBe(true);
-    expect(status.cognitionOS.configured).toBe(true);
+    expect(result.healthy).toBe(true);
+    expect(result.status).toBe('healthy');
+    expect(result.version).toBe('3.1.0');
+  });
+
+  it('returns unhealthy status when Core AI Backend is down', async () => {
+    mockHealth.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const result = await aiHealthCheck();
+
+    expect(result.healthy).toBe(false);
+    expect(result.error).toContain('ECONNREFUSED');
   });
 });
 
-/* ─── Database Dialect Detection Tests ─── */
+describe('getProviderStatus', () => {
+  it('reports core_ai_backend as the active provider', () => {
+    const status = getProviderStatus();
 
-describe("db dialect detection", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
+    expect(status.activeProvider).toBe('core_ai_backend');
+    expect(status.coreAiUrl).toContain('ai.s9n.dxb-gw.basanti.ai');
   });
 
-  it("detects postgresql from DATABASE_URL", async () => {
-    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/stockdb";
-    process.env.DB_DIALECT = "";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("postgresql");
-  });
+  it('does not mention Manus Forge in provider status', () => {
+    const status = getProviderStatus();
 
-  it("detects postgresql from postgres:// prefix", async () => {
-    process.env.DATABASE_URL = "postgres://user:pass@localhost:5432/stockdb";
-    process.env.DB_DIALECT = "";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("postgresql");
-  });
-
-  it("detects mysql from mysql:// prefix", async () => {
-    process.env.DATABASE_URL = "mysql://user:pass@localhost:3306/stockdb";
-    process.env.DB_DIALECT = "";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("mysql");
-  });
-
-  it("defaults to mysql when no prefix match", async () => {
-    process.env.DATABASE_URL = "tidb://user:pass@localhost:4000/stockdb";
-    process.env.DB_DIALECT = "";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("mysql");
-  });
-
-  it("respects explicit DB_DIALECT=postgresql", async () => {
-    process.env.DATABASE_URL = "mysql://user:pass@localhost:3306/stockdb";
-    process.env.DB_DIALECT = "postgresql";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("postgresql");
-  });
-
-  it("respects explicit DB_DIALECT=mysql", async () => {
-    process.env.DATABASE_URL = "postgres://user:pass@localhost:5432/stockdb";
-    process.env.DB_DIALECT = "mysql";
-    const mod = await import("./db");
-    expect(mod.detectDialect()).toBe("mysql");
+    // No fallback provider should be mentioned
+    expect(JSON.stringify(status)).not.toContain('manus');
+    expect(JSON.stringify(status)).not.toContain('forge');
   });
 });

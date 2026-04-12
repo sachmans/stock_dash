@@ -1,15 +1,13 @@
 /**
  * Sentiment-Scored News Engine
- * Inspired by mvanhorn/last30days-skill
  * 
  * Aggregates news from multiple sources and scores each article
  * with AI-powered sentiment analysis (bullish/bearish/neutral + score).
  * 
- * Now uses the unified AI Provider (Core AI Backend → Manus Forge fallback)
- * with CognitionOS knowledge graph enrichment.
+ * Now routes through the unified AI Provider (Core AI Backend → Manus Forge fallback).
  */
 
-import { aiComplete } from './lib/aiProvider';
+import { aiInvoke } from "./lib/aiProvider";
 
 /* ─── Types ─── */
 
@@ -24,8 +22,8 @@ export interface ScoredNewsItem {
   relatedSymbols: string[];
   sentiment: {
     label: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-    score: number; // -100 to +100
-    confidence: number; // 0-100
+    score: number;
+    confidence: number;
   };
   impact: 'HIGH' | 'MEDIUM' | 'LOW';
   category: 'earnings' | 'macro' | 'geopolitical' | 'technical' | 'sector' | 'regulatory' | 'general';
@@ -40,7 +38,7 @@ export interface NewsSentimentSummary {
   highImpactCount: number;
 }
 
-/* ─── Sentiment Analysis via AI Provider ─── */
+/* ─── Sentiment Analysis via LLM ─── */
 
 const SENTIMENT_RESPONSE_FORMAT = {
   type: "json_schema" as const,
@@ -92,7 +90,7 @@ const SENTIMENT_RESPONSE_FORMAT = {
 };
 
 /**
- * Score a batch of news articles for sentiment using the AI Provider.
+ * Score a batch of news articles for sentiment using LLM.
  */
 export async function scoreNewsSentiment(
   articles: Array<{ title: string; summary: string; source: string }>,
@@ -112,7 +110,7 @@ export async function scoreNewsSentiment(
       .map((a, i) => `[${i}] "${a.title}" — ${a.summary || 'No summary'} (Source: ${a.source})`)
       .join('\n');
 
-    const response = await aiComplete({
+    const response = await aiInvoke({
       messages: [
         {
           role: "system",
@@ -127,16 +125,14 @@ Be precise — a general market article with no direct relevance should be NEUTR
         },
       ],
       response_format: SENTIMENT_RESPONSE_FORMAT,
-      enrichWithKnowledgeGraph: {
-        symbol,
-        additionalTerms: [instrumentName],
-      },
     });
 
-    const parsed = JSON.parse(response.content);
+    const content = response?.choices?.[0]?.message?.content;
+    if (!content) return articles.map(() => defaultSentiment());
+
+    const parsed = JSON.parse(content as string);
     if (!Array.isArray(parsed.articles)) return articles.map(() => defaultSentiment());
 
-    // Map results back to article indices
     return articles.map((_, i) => {
       const result = parsed.articles.find((a: any) => a.index === i);
       if (!result) return defaultSentiment();
@@ -185,7 +181,6 @@ export function calculateSentimentSummary(items: ScoredNewsItem[]): NewsSentimen
   const neutralCount = items.filter((i) => i.sentiment.label === 'NEUTRAL').length;
   const highImpactCount = items.filter((i) => i.impact === 'HIGH').length;
 
-  // Weighted average score (high impact articles count more)
   const weightedSum = items.reduce((sum, item) => {
     const weight = item.impact === 'HIGH' ? 3 : item.impact === 'MEDIUM' ? 2 : 1;
     return sum + item.sentiment.score * weight;

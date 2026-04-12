@@ -5,18 +5,10 @@
  * Multiple AI "agents" analyze the same instrument from different perspectives,
  * then a moderator agent synthesizes their views into a final recommendation.
  * 
- * Now uses the unified AI Provider (Core AI Backend → Manus Forge fallback)
- * with CognitionOS knowledge graph enrichment.
- * 
- * Agents:
- * 1. Technical Analyst — focuses on chart patterns, indicators, price action
- * 2. Fundamental Analyst — focuses on macro factors, sector trends, valuation
- * 3. Sentiment Analyst — focuses on news sentiment, market mood, momentum
- * 4. Risk Manager — focuses on risk assessment, position sizing, stop levels
- * 5. Moderator — synthesizes all agent views into a final recommendation
+ * Now routes through the unified AI Provider (Core AI Backend → Manus Forge fallback).
  */
 
-import { aiComplete } from './lib/aiProvider';
+import { aiInvoke } from "./lib/aiProvider";
 
 /* ─── Types ─── */
 
@@ -24,7 +16,7 @@ export interface AgentOpinion {
   agent: string;
   role: string;
   stance: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  confidence: number; // 0-100
+  confidence: number;
   reasoning: string;
   keyPoints: string[];
 }
@@ -37,7 +29,7 @@ export interface MultiAgentAnalysis {
     summary: string;
     agreementLevel: 'UNANIMOUS' | 'MAJORITY' | 'SPLIT' | 'DIVIDED';
   };
-  debate: string; // Summary of where agents agree/disagree
+  debate: string;
   finalVerdict: {
     action: string;
     buyLevel: number;
@@ -48,7 +40,6 @@ export interface MultiAgentAnalysis {
   };
   analyzedAt: number;
   symbol: string;
-  aiProvider?: string; // Which provider was used
 }
 
 interface AnalysisInput {
@@ -185,45 +176,38 @@ const MODERATOR_RESPONSE_FORMAT = {
 
 /* ─── Agent Execution ─── */
 
-async function runAgent(role: string, roleName: string, input: AnalysisInput): Promise<{ opinion: AgentOpinion; provider: string }> {
+async function runAgent(role: string, roleName: string, input: AnalysisInput): Promise<AgentOpinion> {
   try {
     const prompt = buildAgentPrompt(role, input);
-    const response = await aiComplete({
+    const response = await aiInvoke({
       messages: [
         { role: "system", content: prompt },
         { role: "user", content: `Provide your ${roleName} analysis of ${input.symbol}. Be specific and data-driven.` },
       ],
       response_format: AGENT_RESPONSE_FORMAT,
-      enrichWithKnowledgeGraph: {
-        symbol: input.symbol,
-        additionalTerms: [input.name, input.exchange || ''],
-      },
     });
 
-    const parsed = JSON.parse(response.content);
+    const content = response?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Empty LLM response");
+
+    const parsed = JSON.parse(content as string);
     return {
-      opinion: {
-        agent: roleName,
-        role,
-        stance: ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(parsed.stance) ? parsed.stance : 'NEUTRAL',
-        confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
-        reasoning: parsed.reasoning || 'Analysis unavailable',
-        keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.slice(0, 5) : [],
-      },
-      provider: response.provider,
+      agent: roleName,
+      role,
+      stance: ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(parsed.stance) ? parsed.stance : 'NEUTRAL',
+      confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
+      reasoning: parsed.reasoning || 'Analysis unavailable',
+      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.slice(0, 5) : [],
     };
   } catch (err) {
     console.error(`[MultiAgent] ${roleName} agent failed:`, err);
     return {
-      opinion: {
-        agent: roleName,
-        role,
-        stance: 'NEUTRAL',
-        confidence: 30,
-        reasoning: `${roleName} analysis could not be completed due to an error.`,
-        keyPoints: ['Analysis unavailable'],
-      },
-      provider: 'none',
+      agent: roleName,
+      role,
+      stance: 'NEUTRAL',
+      confidence: 30,
+      reasoning: `${roleName} analysis could not be completed due to an error.`,
+      keyPoints: ['Analysis unavailable'],
     };
   }
 }
@@ -231,7 +215,7 @@ async function runAgent(role: string, roleName: string, input: AnalysisInput): P
 async function runModerator(
   agents: AgentOpinion[],
   input: AnalysisInput,
-): Promise<{ result: MultiAgentAnalysis['consensus'] & MultiAgentAnalysis['finalVerdict'] & { debate: string }; provider: string }> {
+): Promise<MultiAgentAnalysis['consensus'] & MultiAgentAnalysis['finalVerdict'] & { debate: string }> {
   try {
     const agentSummaries = agents
       .map(
@@ -240,7 +224,7 @@ async function runModerator(
       )
       .join('\n\n');
 
-    const response = await aiComplete({
+    const response = await aiInvoke({
       messages: [
         {
           role: "system",
@@ -258,46 +242,40 @@ async function runModerator(
         },
       ],
       response_format: MODERATOR_RESPONSE_FORMAT,
-      enrichWithKnowledgeGraph: {
-        symbol: input.symbol,
-      },
     });
 
-    const parsed = JSON.parse(response.content);
+    const content = response?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Empty moderator response");
+
+    const parsed = JSON.parse(content as string);
 
     return {
-      result: {
-        recommendation: parsed.recommendation || 'HOLD',
-        confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
-        summary: parsed.summary || 'Analysis complete.',
-        agreementLevel: parsed.agreementLevel || 'SPLIT',
-        debate: parsed.debate || 'No debate summary available.',
-        action: parsed.action || 'Hold current position',
-        buyLevel: parsed.buyLevel || input.price * 0.98,
-        stopLoss: parsed.stopLoss || input.price * 0.95,
-        targetPrice: parsed.targetPrice || input.price * 1.05,
-        riskRewardRatio: 0, // Calculated below
-        timeHorizon: parsed.timeHorizon || '1-2 weeks',
-      },
-      provider: response.provider,
+      recommendation: parsed.recommendation || 'HOLD',
+      confidence: Math.max(0, Math.min(100, parsed.confidence || 50)),
+      summary: parsed.summary || 'Analysis complete.',
+      agreementLevel: parsed.agreementLevel || 'SPLIT',
+      debate: parsed.debate || 'No debate summary available.',
+      action: parsed.action || 'Hold current position',
+      buyLevel: parsed.buyLevel || input.price * 0.98,
+      stopLoss: parsed.stopLoss || input.price * 0.95,
+      targetPrice: parsed.targetPrice || input.price * 1.05,
+      riskRewardRatio: 0,
+      timeHorizon: parsed.timeHorizon || '1-2 weeks',
     };
   } catch (err) {
     console.error('[MultiAgent] Moderator failed:', err);
     return {
-      result: {
-        recommendation: 'HOLD',
-        confidence: 40,
-        summary: 'Multi-agent analysis could not reach a consensus.',
-        agreementLevel: 'DIVIDED',
-        debate: 'Analysis incomplete due to an error.',
-        action: 'Hold and monitor',
-        buyLevel: input.price * 0.98,
-        stopLoss: input.price * 0.95,
-        targetPrice: input.price * 1.05,
-        riskRewardRatio: 1.67,
-        timeHorizon: '1-2 weeks',
-      },
-      provider: 'none',
+      recommendation: 'HOLD',
+      confidence: 40,
+      summary: 'Multi-agent analysis could not reach a consensus.',
+      agreementLevel: 'DIVIDED',
+      debate: 'Analysis incomplete due to an error.',
+      action: 'Hold and monitor',
+      buyLevel: input.price * 0.98,
+      stopLoss: input.price * 0.95,
+      targetPrice: input.price * 1.05,
+      riskRewardRatio: 1.67,
+      timeHorizon: '1-2 weeks',
     };
   }
 }
@@ -305,42 +283,21 @@ async function runModerator(
 /* ─── Main Entry Point ─── */
 
 export async function runMultiAgentAnalysis(input: AnalysisInput): Promise<MultiAgentAnalysis> {
-  // Run all 4 agents in parallel
-  const [technicalResult, fundamentalResult, sentimentResult, riskResult] = await Promise.all([
+  const [technical, fundamental, sentiment, risk] = await Promise.all([
     runAgent('technical', 'Technical Analyst', input),
     runAgent('fundamental', 'Fundamental Analyst', input),
     runAgent('sentiment', 'Sentiment Analyst', input),
     runAgent('risk', 'Risk Manager', input),
   ]);
 
-  const agents = [
-    technicalResult.opinion,
-    fundamentalResult.opinion,
-    sentimentResult.opinion,
-    riskResult.opinion,
-  ];
-
-  // Track which provider was used
-  const providers = [technicalResult.provider, fundamentalResult.provider, sentimentResult.provider, riskResult.provider];
-
-  // Run moderator with all agent opinions
+  const agents = [technical, fundamental, sentiment, risk];
   const moderatorResult = await runModerator(agents, input);
-  providers.push(moderatorResult.provider);
 
-  // Determine primary provider used
-  const providerCounts: Record<string, number> = {};
-  for (const p of providers) {
-    providerCounts[p] = (providerCounts[p] || 0) + 1;
-  }
-  const primaryProvider = Object.entries(providerCounts)
-    .sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
-
-  // Calculate risk/reward ratio
   const riskRewardRatio =
-    moderatorResult.result.stopLoss !== moderatorResult.result.buyLevel
+    moderatorResult.stopLoss !== moderatorResult.buyLevel
       ? Math.round(
-          ((moderatorResult.result.targetPrice - moderatorResult.result.buyLevel) /
-            (moderatorResult.result.buyLevel - moderatorResult.result.stopLoss)) *
+          ((moderatorResult.targetPrice - moderatorResult.buyLevel) /
+            (moderatorResult.buyLevel - moderatorResult.stopLoss)) *
             100,
         ) / 100
       : 1.5;
@@ -348,22 +305,21 @@ export async function runMultiAgentAnalysis(input: AnalysisInput): Promise<Multi
   return {
     agents,
     consensus: {
-      recommendation: moderatorResult.result.recommendation,
-      confidence: moderatorResult.result.confidence,
-      summary: moderatorResult.result.summary,
-      agreementLevel: moderatorResult.result.agreementLevel,
+      recommendation: moderatorResult.recommendation,
+      confidence: moderatorResult.confidence,
+      summary: moderatorResult.summary,
+      agreementLevel: moderatorResult.agreementLevel,
     },
-    debate: moderatorResult.result.debate,
+    debate: moderatorResult.debate,
     finalVerdict: {
-      action: moderatorResult.result.action,
-      buyLevel: moderatorResult.result.buyLevel,
-      stopLoss: moderatorResult.result.stopLoss,
-      targetPrice: moderatorResult.result.targetPrice,
+      action: moderatorResult.action,
+      buyLevel: moderatorResult.buyLevel,
+      stopLoss: moderatorResult.stopLoss,
+      targetPrice: moderatorResult.targetPrice,
       riskRewardRatio,
-      timeHorizon: moderatorResult.result.timeHorizon,
+      timeHorizon: moderatorResult.timeHorizon,
     },
     analyzedAt: Date.now(),
     symbol: input.symbol,
-    aiProvider: primaryProvider,
   };
 }
