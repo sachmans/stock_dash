@@ -16,9 +16,12 @@ vi.mock('./_core/dataApi', () => ({
   callDataApi: vi.fn(),
 }));
 
-// Mock the invokeLLM function (required since routers.ts imports it)
-vi.mock('./_core/llm', () => ({
-  invokeLLM: vi.fn(),
+// Mock the unified AI provider (Core AI Backend)
+vi.mock('./lib/aiProvider', () => ({
+  aiInvoke: vi.fn(),
+  getProviderStatus: vi.fn().mockReturnValue({ activeProvider: 'core_ai_backend', healthy: true, consecutiveFailures: 0, lastSuccess: Date.now(), lastFailure: null, coreAiUrl: 'https://ai.s9n.dxb-gw.basanti.ai' }),
+  aiGenerate: vi.fn(),
+  aiHealthCheck: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
 // Mock the Yahoo fallback to prevent real HTTP calls and timeouts
@@ -26,6 +29,24 @@ vi.mock('./yahooFallback', () => ({
   fetchYahooChart: vi.fn().mockResolvedValue(null),
   fetchYahooNews: vi.fn().mockResolvedValue(null),
 }));
+
+// Mock CognitionOS and Memory Vault modules
+vi.mock('./lib/cognitionOSClient', () => ({
+  getCognitionOS: vi.fn().mockReturnValue({ vectorSearch: vi.fn().mockResolvedValue([]), createConcept: vi.fn().mockResolvedValue({}), health: vi.fn().mockResolvedValue({ status: 'ok' }) }),
+}));
+vi.mock('./lib/memoryVaultClient', () => ({
+  getMemoryVault: vi.fn().mockReturnValue({ search: vi.fn().mockResolvedValue({ episodes: [] }), createEpisode: vi.fn().mockResolvedValue({}), health: vi.fn().mockResolvedValue({ healthy: true }) }),
+}));
+vi.mock('./lib/progressiveExtraction', () => ({
+  extractContext: vi.fn().mockResolvedValue({ formattedContext: '', concepts: [], decisions: [], episodes: [] }),
+  getKnowledgeStatus: vi.fn().mockResolvedValue({ conceptsKnown: 0, pastDecisions: 0, episodesStored: 0 }),
+}));
+vi.mock('./lib/tradingDomainSetup', () => ({
+  setupTradingDomain: vi.fn().mockResolvedValue({ success: true }),
+  getDomainStatus: vi.fn().mockResolvedValue({ healthy: true }),
+}));
+vi.mock('./lib/newsIngestion', () => ({ ingestScoredNews: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./lib/recommendationIngestion', () => ({ ingestRecommendation: vi.fn().mockResolvedValue(undefined), recallPreviousRecommendations: vi.fn().mockResolvedValue([]) }));
 
 import { callDataApi } from './_core/dataApi';
 import { cacheClear } from './cache';

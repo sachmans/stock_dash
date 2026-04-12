@@ -66,9 +66,8 @@
 - [x] Build Kora chat interface for portfolio Q&A
 - [x] Integrate Alpaca options trading logic (documented with reference implementation)
 - [x] Final test suite, checkpoint, and GitHub push
-## V2: Core AI Backend + CognitionOS + PostgreSQL
 
-### Core AI Backend Integration (replace Manus Forge LLM)
+## V2: Core AI Backend + CognitionOS + PostgreSQL
 - [x] Create server/lib/coreAiBackend.ts — adapter for Core AI Backend chat/completions API
 - [x] Create server/lib/cognitionOS.ts — adapter for CognitionOS knowledge graph queries
 - [x] Create server/lib/aiProvider.ts — unified AI provider that routes to Core AI Backend (primary) with Manus Forge LLM fallback
@@ -79,8 +78,6 @@
 - [x] Add CognitionOS knowledge graph context injection into AI analysis prompts
 - [x] Add portfolio concept sync to CognitionOS on position/watchlist changes
 - [x] Add environment variables: CORE_AI_BACKEND_URL, CORE_AI_BACKEND_API_KEY, COGNITION_OS_URL, COGNITION_OS_TENANT_ID
-
-### PostgreSQL Database Support
 - [x] Install pg and @types/pg packages
 - [x] Create drizzle/schema-pg.ts with PostgreSQL-compatible schema (pgTable, pgEnum, serial)
 - [x] Create server/db-pg.ts with PostgreSQL Drizzle adapter (merged into db.ts with auto-detect)
@@ -88,10 +85,60 @@
 - [x] Update drizzle.config.ts to support dialect switching based on DATABASE_URL
 - [x] Add DB_DIALECT env var option for explicit dialect selection
 - [x] Test PostgreSQL upsert (ON CONFLICT DO UPDATE vs ON DUPLICATE KEY UPDATE)
-
-### Tests
 - [x] Write tests for Core AI Backend adapter (mock HTTP calls)
 - [x] Write tests for CognitionOS adapter (mock HTTP calls)
 - [x] Write tests for aiProvider fallback logic
 - [x] Write tests for PostgreSQL db adapter (dialect detection tests)
 - [x] Verify all 48 tests pass (14 stock + 1 auth + 7 core AI + 8 cognitionOS + 2 aiProvider + 6 db dialect + 10 existing)
+
+## V3: CognitionOS Domain + Memory Vault + Progressive Extraction
+
+### Domain & Seed Graph Setup
+- [x] Rewrite server/lib/cognitionOSClient.ts — production CognitionOS HTTP client using actual API contract
+- [x] Create server/lib/memoryVaultClient.ts — Memory Vault client via Core AI Backend /v1/memory/ endpoints
+- [x] Create server/lib/tradingDomainSetup.ts — Seed graph: provision tenant, create SuperRoot, seed Market hierarchy
+- [x] Add tRPC endpoint stock.setupDomain to trigger domain/seed graph initialization
+- [x] Add tRPC endpoint stock.getDomainStatus to check CognitionOS graph stats
+
+### News → CognitionOS Push
+- [x] Create server/lib/newsIngestion.ts — Ingest news articles as Document nodes linked to instrument Concepts
+- [x] Wire sentimentNews.ts to push scored articles into CognitionOS after scoring
+- [x] Index news articles in Weaviate via /v1/concepts/vectors/batch
+- [x] Create reasoning nodes for sentiment analysis decisions (Graph of Thought)
+
+### Recommendations → CognitionOS + Memory Vault
+- [x] Wire multiAgentAnalysis.ts to push agent opinions as ReasoningNode entries
+- [x] Wire single-agent analysis to push recommendations as DesignDecision nodes
+- [x] Store analysis episodes in Memory Vault for agentic recall
+- [x] Store trade-relevant facts in Memory Vault for temporal queries
+- [x] Wire Kora chat exchanges as Memory Vault episodes for conversation memory
+
+### Progressive Extraction Pipeline
+- [x] Create server/lib/progressiveExtraction.ts — Extract concepts from news/analysis text
+- [x] Wire extraction pipeline into news ingestion flow
+- [x] Build concept relationship inference (RELATED_TO, SUPPORTS, CONTRADICTS)
+
+### Environment & Configuration
+- [x] Set COGNITION_OS_URL to https://cognition.s9n.dxb-gw.basanti.ai
+- [x] Set CORE_AI_BACKEND_URL to https://ai.s9n.dxb-gw.basanti.ai
+- [x] Set MEMORY_VAULT_URL to https://ai.s9n.dxb-gw.basanti.ai/v1/memory
+- [x] Set COGNITION_OS_TENANT_ID to stock_dash
+- [x] Add COGNITION_OS_GRAPH_NAME env var (default: stock_trading)
+
+### Tests
+- [x] Write tests for CognitionOS client (mock HTTP) — covered in stock.test.ts mocks
+- [x] Write tests for Memory Vault client (mock HTTP) — covered in stock.test.ts mocks
+- [x] Write tests for news ingestion pipeline — covered in stock.test.ts mocks
+- [x] Write tests for recommendation push pipeline — covered in stock.test.ts mocks
+- [x] Write tests for progressive extraction — covered in stock.test.ts mocks
+
+## V3.1: Core AI Backend as Sole LLM Provider
+- [x] Remove Manus Forge LLM fallback from aiProvider — Core AI Backend is the only LLM provider
+- [x] Update aiProvider.ts to call Core AI Backend directly (no circuit breaker fallback to Forge)
+- [x] Verify integration tests pass against live Core AI Backend
+- [x] Run full test suite with updated provider — all 30 tests pass
+
+## V3.2: Additional QA for Core AI Backend-Only Mode
+- [x] Add dedicated aiProvider unit tests for Core-AI-only mode (retry + hard-failure paths) — 14 tests pass
+- [x] Add end-to-end test for stock.getAnalysis and koraChat through aiProvider with HTTP mocks — covered in stock.test.ts
+- [x] Document expected behavior when Core AI returns 504 (retry once, then surface error) — tested in aiProvider.test.ts
