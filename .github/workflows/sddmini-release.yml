@@ -1,0 +1,197 @@
+name: SDDMini Release
+
+on:
+  push:
+    tags:
+      - 'SDDMini-KH/v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build and deploy
+    runs-on: [self-hosted, macOS, colima]
+    timeout-minutes: 30
+
+    env:
+      REPO_NAME: ${{ github.event.repository.name }}
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve paths
+        id: paths
+        run: |
+          if   [[ -d "/Volumes/Studio Data Drive" ]]; then DATA_DRIVE="/Volumes/Studio Data Drive"
+          elif [[ -d "/Volumes/DataDrive"          ]]; then DATA_DRIVE="/Volumes/DataDrive"
+          elif [[ -d "/Volumes/Data Drive"         ]]; then DATA_DRIVE="/Volumes/Data Drive"
+          else                                              DATA_DRIVE="$HOME"
+          fi
+
+          APP_DIR="$DATA_DRIVE/services/apps/$REPO_NAME"
+          DATA_DIR="$APP_DIR/data"
+          ENV_FILE="$APP_DIR/.env"
+
+          SAFE_NAME=$(echo "$REPO_NAME"   | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
+          SAFE_TAG=$(echo  "$RELEASE_TAG" | tr '/' '-')
+          SAFE_IMAGE="${SAFE_NAME}:${SAFE_TAG}"
+
+          echo "data_drive=$DATA_DRIVE"  >> "$GITHUB_OUTPUT"
+          echo "app_dir=$APP_DIR"        >> "$GITHUB_OUTPUT"
+          echo "data_dir=$DATA_DIR"      >> "$GITHUB_OUTPUT"
+          echo "env_file=$ENV_FILE"      >> "$GITHUB_OUTPUT"
+          echo "safe_name=$SAFE_NAME"    >> "$GITHUB_OUTPUT"
+          echo "safe_tag=$SAFE_TAG"      >> "$GITHUB_OUTPUT"
+          echo "safe_image=$SAFE_IMAGE"  >> "$GITHUB_OUTPUT"
+
+          # Check SHARED_INFRA flag (default: true)
+          SHARED_INFRA=true
+          if [[ -f "$ENV_FILE" ]] && grep -q '^SHARED_INFRA=false' "$ENV_FILE"; then
+            SHARED_INFRA=false
+          fi
+          echo "shared_infra=$SHARED_INFRA" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure app directories exist
+        run: mkdir -p "${{ steps.paths.outputs.data_dir }}"
+
+      - name: Verify Docker / Colima is reachable
+        run: |
+          docker info --format 'Docker version: {{.ServerVersion}}'
+
+      - name: Ensure shared infrastructure is running
+        if: steps.paths.outputs.shared_infra != 'false'
+        run: ~/infra/scripts/start.sh
+
+      - name: Load env into working directory
+        run: |
+          ENV_FILE="${{ steps.paths.outputs.env_file }}"
+          if [[ -f "$ENV_FILE" ]]; then cp "$ENV_FILE" .env; fi
+
+      - name: Build image
+        run: |
+          docker build \
+            --tag "${{ steps.paths.outputs.safe_image }}" \
+            --label "github.repository=${{ github.repository }}" \
+            --label "github.tag=${{ github.ref_name }}" \
+            .
+
+      - name: Stop and remove existing container
+        run: |
+          if docker ps -a --format '{{.Names}}' | grep -qx "${{ steps.paths.outputs.safe_name }}"; then
+            docker stop "${{ steps.paths.outputs.safe_name }}"
+            docker rm   "${{ steps.paths.outputs.safe_name }}"
+          fi
+
+      - name: Read port from registry
+        id: port_registry
+        run: |
+          REGISTRY="${{ steps.paths.outputs.data_drive }}/Runners/port-registry.json"
+          PORT_ARGS=""
+          if [[ -f "$REGISTRY" ]]; then
+            PORT_ARGS=$(python3 -c "
+import json
+with open('$REGISTRY') as f: reg = json.load(f)
+app = reg.get('apps', {}).get('$REPO_NAME', {})
+ports = app.get('ports', [])
+print(' '.join(f'-p {p[\"host_port\"]}:{p[\"container_port\"]}' for p in ports))
+" 2>/dev/null || echo "")
+          fi
+          if [[ -z "$PORT_ARGS" ]]; then
+            PORT_ARGS="-p 3024:3000"
+            echo "No registry entry — using setup-time port"
+          else
+            echo "Ports from registry: $PORT_ARGS"
+          fi
+          echo "port_args=$PORT_ARGS" >> "$GITHUB_OUTPUT"
+
+      - name: Run new container
+        run: |
+          ENV_FILE="${{ steps.paths.outputs.env_file }}"
+          NETWORK_ARG=""
+          if [[ "${{ steps.paths.outputs.shared_infra }}" != "false" ]]; then
+            NETWORK_ARG="--network shared-infra"
+          fi
+
+          DOCKER_ARGS=(
+            --name "${{ steps.paths.outputs.safe_name }}"
+            --restart unless-stopped
+            --log-driver json-file --log-opt max-size=50m --log-opt max-file=3
+            -v "${{ steps.paths.outputs.data_dir }}:/app/data"
+            ${{ steps.port_registry.outputs.port_args }}
+            $NETWORK_ARG
+          )
+          if [[ -f "$ENV_FILE" ]]; then
+            DOCKER_ARGS+=(--env-file "$ENV_FILE")
+          fi
+
+          docker run -d "${DOCKER_ARGS[@]}" "${{ steps.paths.outputs.safe_image }}"
+
+      - name: Verify container is running
+        run: |
+          sleep 3
+          STATUS=$(docker inspect "${{ steps.paths.outputs.safe_name }}" --format '{{.State.Status}}')
+          if [[ "$STATUS" != "running" ]]; then
+            docker logs "${{ steps.paths.outputs.safe_name }}" --tail 50
+            exit 1
+          fi
+          docker ps --filter "name=${{ steps.paths.outputs.safe_name }}" \
+            --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+      - name: Verify host port bindings match registry
+        run: |
+          REGISTRY="${{ steps.paths.outputs.data_drive }}/Runners/port-registry.json"
+          if [[ ! -f "$REGISTRY" ]]; then
+            echo "WARNING: port-registry.json not found at $REGISTRY — skipping binding check"
+            exit 0
+          fi
+          python3 - "$REGISTRY" "$REPO_NAME" <<'PYEOF'
+          import json, re, subprocess, sys
+          registry_path, repo_name = sys.argv[1], sys.argv[2]
+          with open(registry_path) as f:
+              reg = json.load(f)
+          app = reg.get("apps", {}).get(repo_name, {})
+          expected = []
+          for p in app.get("ports", []):
+              note = str(p.get("_note", "")).lower()
+              if "internal only" in note or "not yet deployed" in note or "not deployed" in note:
+                  continue
+              expected.append((p["host_port"], p["container_port"], p.get("service", "")))
+          if not expected:
+              print(f"No deployable ports registered for {repo_name} — skipping binding check")
+              sys.exit(0)
+          out = subprocess.run(
+              ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"],
+              capture_output=True, text=True,
+          ).stdout
+          bindings = []
+          for line in out.strip().splitlines():
+              name, _, ports = line.partition("\t")
+              for m in re.finditer(r"(?:0\.0\.0\.0|::):(\d+)->(\d+)", ports):
+                  bindings.append((int(m.group(1)), int(m.group(2)), name.strip()))
+          failures = []
+          for hp, cp, svc in expected:
+              match = next((b for b in bindings if b[0] == hp), None)
+              label = svc or "unnamed"
+              if not match:
+                  failures.append(
+                      f"  MISSING: registry expects {hp}:{cp} ({label}) — no container bound on host port {hp}"
+                  )
+              elif match[1] != cp:
+                  failures.append(
+                      f"  MISMATCH: host port {hp} ({label}) — registry container_port={cp}, actual={match[1]} ({match[2]})"
+                  )
+              else:
+                  print(f"  OK: {hp}:{cp} ({label}) -> {match[2]}")
+          if failures:
+              print("")
+              print("Port binding validation FAILED — runtime bindings do not match port-registry.json:")
+              for f in failures:
+                  print(f)
+              sys.exit(1)
+          print("")
+          print("✓ All registry-assigned host ports are bound correctly")
+          PYEOF
+
+      - name: Clean up old images
+        run: docker image prune -f --filter "until=72h" || true
