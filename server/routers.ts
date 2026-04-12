@@ -2,7 +2,6 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
-import { callDataApi } from "./_core/dataApi";
 import { aiInvoke } from "./lib/aiProvider";
 import { getProviderStatus } from "./lib/aiProvider";
 import { cacheGet, cacheSet, CACHE_TTL } from "./cache";
@@ -18,26 +17,8 @@ import { getCognitionOS } from "./lib/cognitionOSClient";
 import { getMemoryVault } from "./lib/memoryVaultClient";
 import { z } from "zod";
 
-/** Track whether the Data API quota is exhausted so we skip it quickly */
-let dataApiExhausted = false;
-let dataApiExhaustedAt = 0;
-const EXHAUSTION_COOLDOWN = 300_000; // 5 minutes before retrying Data API
+/** Yahoo Finance is the sole data source (no Manus Data API) */
 
-function isDataApiAvailable(): boolean {
-  if (!dataApiExhausted) return true;
-  if (Date.now() - dataApiExhaustedAt > EXHAUSTION_COOLDOWN) {
-    dataApiExhausted = false;
-    console.log("[Stock API] Data API cooldown expired, will retry");
-    return true;
-  }
-  return false;
-}
-
-function markDataApiExhausted() {
-  dataApiExhausted = true;
-  dataApiExhaustedAt = Date.now();
-  console.warn("[Stock API] Data API quota exhausted, switching to Yahoo fallback for 5 minutes");
-}
 
 export const appRouter = router({
   system: systemRouter,
@@ -70,33 +51,7 @@ export const appRouter = router({
         const cached = cacheGet<unknown>(cacheKey);
         if (cached) return cached;
 
-        if (isDataApiAvailable()) {
-          try {
-            const data = await callDataApi("YahooFinance/get_stock_chart", {
-              query: {
-                symbol: input.symbol,
-                region: input.region,
-                interval: input.interval,
-                range: input.range,
-                includeAdjustedClose: 'true',
-              },
-            }) as any;
-            if (data?.message && String(data.message).includes('rate limit')) {
-              console.warn(`[Stock API] Data API rate limited for ${input.symbol}`);
-            } else if (data) {
-              cacheSet(cacheKey, data, ttl);
-              return data;
-            }
-          } catch (err: any) {
-            const msg = String(err?.message || '');
-            if (msg.includes('usage exhausted') || msg.includes('failed_precondition')) {
-              markDataApiExhausted();
-            } else {
-              console.error("[Stock API] Data API chart error:", msg);
-            }
-          }
-        }
-
+        // Yahoo Finance direct (no Manus Data API)
         try {
           const yahooData = await fetchYahooChart(input.symbol, input.range, input.interval);
           if (yahooData) {
@@ -123,23 +78,7 @@ export const appRouter = router({
         const cached = cacheGet<unknown>(cacheKey);
         if (cached) return cached;
 
-        if (isDataApiAvailable()) {
-          try {
-            const data = await callDataApi("YahooFinance/get_stock_insights", {
-              query: { symbol: input.symbol },
-            });
-            if (data) {
-              cacheSet(cacheKey, data, CACHE_TTL.INSIGHTS);
-              return data;
-            }
-          } catch (err: any) {
-            const msg = String(err?.message || '');
-            if (msg.includes('usage exhausted') || msg.includes('failed_precondition')) {
-              markDataApiExhausted();
-            }
-          }
-        }
-
+        // Yahoo Finance direct (no Manus Data API)
         try {
           const newsItems = await fetchYahooNews(input.symbol);
           if (newsItems.length > 0) {
