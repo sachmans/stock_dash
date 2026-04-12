@@ -2,11 +2,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
-// Mock the callDataApi function
-vi.mock("./_core/dataApi", () => ({
-  callDataApi: vi.fn(),
-}));
-
 // Mock the unified AI provider (Core AI Backend)
 vi.mock("./lib/aiProvider", () => ({
   aiInvoke: vi.fn(),
@@ -22,10 +17,10 @@ vi.mock("./lib/aiProvider", () => ({
   aiHealthCheck: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
-// Mock the Yahoo fallback to prevent real HTTP calls and timeouts
+// Mock Yahoo Finance (the sole data source now)
 vi.mock("./yahooFallback", () => ({
   fetchYahooChart: vi.fn().mockResolvedValue(null),
-  fetchYahooNews: vi.fn().mockResolvedValue(null),
+  fetchYahooNews: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock CognitionOS modules to prevent real HTTP calls
@@ -66,10 +61,11 @@ vi.mock("./lib/recommendationIngestion", () => ({
   recallPreviousRecommendations: vi.fn().mockResolvedValue([]),
 }));
 
-import { callDataApi } from "./_core/dataApi";
+import { fetchYahooChart, fetchYahooNews } from "./yahooFallback";
 import { aiInvoke } from "./lib/aiProvider";
 import { cacheClear } from "./cache";
-const mockedCallDataApi = vi.mocked(callDataApi);
+const mockedFetchYahooChart = vi.mocked(fetchYahooChart);
+const mockedFetchYahooNews = vi.mocked(fetchYahooNews);
 const mockedAiInvoke = vi.mocked(aiInvoke);
 
 function createPublicContext(): TrpcContext {
@@ -120,38 +116,14 @@ const MOCK_CHART_RESPONSE = {
   },
 };
 
-const MOCK_INSIGHTS_RESPONSE = {
-  finance: {
-    result: {
-      sigDevs: [
-        {
-          headline: "Oil prices surge on OPEC+ cuts",
-          description: "Brent crude rallied after OPEC+ announced production cuts",
-          provider: "Reuters",
-          url: "https://example.com/news/1",
-          date: "2026-04-09",
-        },
-      ],
-      instrumentInfo: {
-        recommendation: {
-          rating: "Buy",
-          targetPrice: {
-            fmt: "85.00",
-          },
-        },
-      },
-      reports: [
-        {
-          reportTitle: "Q1 2026 Energy Outlook",
-          summary: "Bullish outlook for crude oil",
-          provider: "Goldman Sachs",
-          url: "https://example.com/report/1",
-          reportDate: "2026-04-01",
-        },
-      ],
-    },
+const MOCK_NEWS_ITEMS = [
+  {
+    title: "Oil prices surge on OPEC+ cuts",
+    link: "https://example.com/news/1",
+    source: "Reuters",
+    pubDate: "2026-04-09",
   },
-};
+];
 
 describe("stock.getChart", () => {
   beforeEach(() => {
@@ -160,7 +132,7 @@ describe("stock.getChart", () => {
   });
 
   it("returns chart data for a valid symbol", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_CHART_RESPONSE);
+    mockedFetchYahooChart.mockResolvedValueOnce(MOCK_CHART_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -176,19 +148,11 @@ describe("stock.getChart", () => {
     expect((result as any).chart.result[0].meta.symbol).toBe("BRNT.L");
     expect((result as any).chart.result[0].meta.regularMarketPrice).toBe(78.44);
 
-    expect(mockedCallDataApi).toHaveBeenCalledWith("YahooFinance/get_stock_chart", {
-      query: {
-        symbol: "BRNT.L",
-        region: "GB",
-        interval: "1d",
-        range: "1mo",
-        includeAdjustedClose: "true",
-      },
-    });
+    expect(mockedFetchYahooChart).toHaveBeenCalledWith("BRNT.L", "1mo", "1d");
   });
 
-  it("returns null when API call fails", async () => {
-    mockedCallDataApi.mockRejectedValueOnce(new Error("API unavailable"));
+  it("returns null when Yahoo Finance call fails", async () => {
+    mockedFetchYahooChart.mockRejectedValueOnce(new Error("Yahoo unavailable"));
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -204,22 +168,14 @@ describe("stock.getChart", () => {
   });
 
   it("uses default values for optional parameters", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_CHART_RESPONSE);
+    mockedFetchYahooChart.mockResolvedValueOnce(MOCK_CHART_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 
     await caller.stock.getChart({ symbol: "BRNT.L" });
 
-    expect(mockedCallDataApi).toHaveBeenCalledWith("YahooFinance/get_stock_chart", {
-      query: {
-        symbol: "BRNT.L",
-        region: "GB",
-        interval: "1d",
-        range: "1mo",
-        includeAdjustedClose: "true",
-      },
-    });
+    expect(mockedFetchYahooChart).toHaveBeenCalledWith("BRNT.L", "1mo", "1d");
   });
 });
 
@@ -230,7 +186,7 @@ describe("stock.getInsights", () => {
   });
 
   it("returns insights data for a valid symbol", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_INSIGHTS_RESPONSE);
+    mockedFetchYahooNews.mockResolvedValueOnce(MOCK_NEWS_ITEMS as any);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -238,18 +194,16 @@ describe("stock.getInsights", () => {
     const result = await caller.stock.getInsights({ symbol: "BRNT.L" });
 
     expect(result).toBeTruthy();
-    expect((result as any).finance.result.sigDevs).toHaveLength(1);
-    expect((result as any).finance.result.sigDevs[0].headline).toBe(
+    expect((result as any).finance.result.news).toHaveLength(1);
+    expect((result as any).finance.result.news[0].title).toBe(
       "Oil prices surge on OPEC+ cuts"
     );
 
-    expect(mockedCallDataApi).toHaveBeenCalledWith("YahooFinance/get_stock_insights", {
-      query: { symbol: "BRNT.L" },
-    });
+    expect(mockedFetchYahooNews).toHaveBeenCalledWith("BRNT.L");
   });
 
-  it("returns null when API call fails", async () => {
-    mockedCallDataApi.mockRejectedValueOnce(new Error("API unavailable"));
+  it("returns null when Yahoo Finance returns empty news", async () => {
+    mockedFetchYahooNews.mockResolvedValueOnce([]);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -372,7 +326,7 @@ describe("stock.getChart for watchlist symbols", () => {
   };
 
   it("fetches Gold futures (GC=F) data correctly", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_GOLD_RESPONSE);
+    mockedFetchYahooChart.mockResolvedValueOnce(MOCK_GOLD_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -389,19 +343,11 @@ describe("stock.getChart for watchlist symbols", () => {
     expect((result as any).chart.result[0].meta.regularMarketPrice).toBe(4793.30);
     expect((result as any).chart.result[0].meta.currency).toBe("USD");
 
-    expect(mockedCallDataApi).toHaveBeenCalledWith("YahooFinance/get_stock_chart", {
-      query: {
-        symbol: "GC=F",
-        region: "GB",
-        interval: "1d",
-        range: "1d",
-        includeAdjustedClose: "true",
-      },
-    });
+    expect(mockedFetchYahooChart).toHaveBeenCalledWith("GC=F", "1d", "1d");
   });
 
   it("fetches Silver futures (SI=F) data correctly", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_SILVER_RESPONSE);
+    mockedFetchYahooChart.mockResolvedValueOnce(MOCK_SILVER_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -419,7 +365,7 @@ describe("stock.getChart for watchlist symbols", () => {
   });
 
   it("fetches DEWA (DEWA.AE) data correctly with AED currency", async () => {
-    mockedCallDataApi.mockResolvedValueOnce(MOCK_DEWA_RESPONSE);
+    mockedFetchYahooChart.mockResolvedValueOnce(MOCK_DEWA_RESPONSE);
 
     const ctx = createPublicContext();
     const caller = appRouter.createCaller(ctx);
@@ -438,7 +384,7 @@ describe("stock.getChart for watchlist symbols", () => {
   });
 
   it("handles multiple sequential watchlist queries", async () => {
-    mockedCallDataApi
+    mockedFetchYahooChart
       .mockResolvedValueOnce(MOCK_GOLD_RESPONSE)
       .mockResolvedValueOnce(MOCK_SILVER_RESPONSE)
       .mockResolvedValueOnce(MOCK_DEWA_RESPONSE);
@@ -453,7 +399,7 @@ describe("stock.getChart for watchlist symbols", () => {
     expect(goldResult).toBeTruthy();
     expect(silverResult).toBeTruthy();
     expect(dewaResult).toBeTruthy();
-    expect(mockedCallDataApi).toHaveBeenCalledTimes(3);
+    expect(mockedFetchYahooChart).toHaveBeenCalledTimes(3);
   });
 });
 

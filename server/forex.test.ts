@@ -11,11 +11,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { appRouter } from './routers';
 import type { TrpcContext } from './_core/context';
 
-// Mock the callDataApi function
-vi.mock('./_core/dataApi', () => ({
-  callDataApi: vi.fn(),
-}));
-
 // Mock the unified AI provider (Core AI Backend)
 vi.mock('./lib/aiProvider', () => ({
   aiInvoke: vi.fn(),
@@ -24,10 +19,10 @@ vi.mock('./lib/aiProvider', () => ({
   aiHealthCheck: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
-// Mock the Yahoo fallback to prevent real HTTP calls and timeouts
+// Mock Yahoo Finance (the sole data source now)
 vi.mock('./yahooFallback', () => ({
   fetchYahooChart: vi.fn().mockResolvedValue(null),
-  fetchYahooNews: vi.fn().mockResolvedValue(null),
+  fetchYahooNews: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock CognitionOS and Memory Vault modules
@@ -48,9 +43,9 @@ vi.mock('./lib/tradingDomainSetup', () => ({
 vi.mock('./lib/newsIngestion', () => ({ ingestScoredNews: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./lib/recommendationIngestion', () => ({ ingestRecommendation: vi.fn().mockResolvedValue(undefined), recallPreviousRecommendations: vi.fn().mockResolvedValue([]) }));
 
-import { callDataApi } from './_core/dataApi';
+import { fetchYahooChart } from './yahooFallback';
 import { cacheClear } from './cache';
-const mockedCallDataApi = vi.mocked(callDataApi);
+const mockedFetchYahooChart = vi.mocked(fetchYahooChart);
 
 // --- Forex P&L Calculation (mirrors client/src/lib/forex.ts logic) ---
 
@@ -134,22 +129,14 @@ describe('forex P&L calculations', () => {
   });
 
   it('calculates positive P&L when CHF weakens (rate goes up) for trade 1', () => {
-    // Rate goes from 0.767501 to 0.80 → CHF weakened, USD worth more
     const result = calculateForexPnL(TRADE_1, 0.80);
-    // Current value in CHF: 100,000 * 0.80 = 80,000
-    // Original cost: 76,750.10
-    // P&L CHF: 80,000 - 76,750.10 = 3,249.90
     expect(result.pnlCHF).toBeCloseTo(3249.90, 1);
     expect(result.pnlPercent).toBeGreaterThan(0);
     expect(result.currentValueCHF).toBeCloseTo(80_000, 0);
   });
 
   it('calculates negative P&L when CHF strengthens (rate goes down) for trade 1', () => {
-    // Rate goes from 0.767501 to 0.75 → CHF strengthened, USD worth less
     const result = calculateForexPnL(TRADE_1, 0.75);
-    // Current value in CHF: 100,000 * 0.75 = 75,000
-    // Original cost: 76,750.10
-    // P&L CHF: 75,000 - 76,750.10 = -1,750.10
     expect(result.pnlCHF).toBeCloseTo(-1750.10, 1);
     expect(result.pnlPercent).toBeLessThan(0);
     expect(result.currentValueCHF).toBeCloseTo(75_000, 0);
@@ -162,9 +149,6 @@ describe('forex P&L calculations', () => {
     const totalPnLCHF = r1.pnlCHF + r2.pnlCHF;
     const totalBoughtUSD = r1.currentValueUSD + r2.currentValueUSD;
 
-    // Trade 1: 100,000 * 0.82 - 76,750.10 = 5,249.90
-    // Trade 2: 200,000 * 0.82 - 158,150 = 5,850.00
-    // Total: 11,099.90
     expect(totalPnLCHF).toBeCloseTo(11_099.90, 1);
     expect(totalBoughtUSD).toBe(300_000);
   });
@@ -172,7 +156,7 @@ describe('forex P&L calculations', () => {
   it('handles zero current rate gracefully', () => {
     const result = calculateForexPnL(TRADE_1, 0);
     expect(result.pnlCHF).toBe(-76_750.10);
-    expect(result.pnlUSD).toBe(0); // division by zero guard
+    expect(result.pnlUSD).toBe(0);
     expect(result.currentValueCHF).toBe(0);
   });
 
@@ -209,14 +193,13 @@ describe('stock.getChart with forex symbol', () => {
   let caller: ReturnType<typeof appRouter.createCaller>;
 
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     cacheClear();
     caller = appRouter.createCaller(createPublicContext());
   });
 
   it('accepts USDCHF=X as a valid symbol', async () => {
-    // Mock the data API to return a valid forex chart response
-    mockedCallDataApi.mockResolvedValueOnce({
+    mockedFetchYahooChart.mockResolvedValueOnce({
       chart: {
         result: [{
           meta: {
@@ -253,8 +236,8 @@ describe('stock.getChart with forex symbol', () => {
     expect(result.chart.result[0].meta.regularMarketPrice).toBe(0.815);
   });
 
-  it('returns null when forex data API call fails', async () => {
-    mockedCallDataApi.mockRejectedValueOnce(new Error('API unavailable'));
+  it('returns null when Yahoo Finance call fails for forex', async () => {
+    mockedFetchYahooChart.mockRejectedValueOnce(new Error('Yahoo unavailable'));
 
     const result = await caller.stock.getChart({
       symbol: 'USDCHF=X',

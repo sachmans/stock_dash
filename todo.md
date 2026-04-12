@@ -142,3 +142,15 @@
 - [x] Add dedicated aiProvider unit tests for Core-AI-only mode (retry + hard-failure paths) — 14 tests pass
 - [x] Add end-to-end test for stock.getAnalysis and koraChat through aiProvider with HTTP mocks — covered in stock.test.ts
 - [x] Document expected behavior when Core AI returns 504 (retry once, then surface error) — tested in aiProvider.test.ts
+
+## Bugs
+- [x] BUG: Adding to watchlist — investigated, works correctly (AAPL added successfully via dialog)
+
+## V4: Standalone (Off-Manus) Build
+- [x] Create `manus` branch on GitHub to preserve current Manus-integrated state
+- [x] Strip Manus OAuth — replaced with standalone JWT auth (bcrypt + jose)
+- [x] Strip Manus Forge API, storage proxy, data API, LLM, image gen, voice, maps, notifications
+- [x] Strip Manus vite plugin, debug collector, and hosting-specific config
+- [x] Update env.ts, package.json, and build scripts for standalone operation
+- [x] Run tests and verify clean standalone build — all 44 tests pass
+- [ ] Tag as SDDMini-KH/v1.0.0 and push to GitHub (in progress)
