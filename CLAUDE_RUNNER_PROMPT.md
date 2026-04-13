@@ -20,9 +20,9 @@ You are deploying **StockDash**, a standalone stock portfolio tracker with AI-po
 └─────────┬──────────┬──────────────┬────────────────┬────┘
           │          │              │                │
     ┌─────▼─────┐ ┌──▼───────┐ ┌───▼──────────┐ ┌──▼──────────┐
-    │ MySQL 8.0 │ │ Core AI  │ │ CognitionOS  │ │ Memory Vault│
-    │ (local)   │ │ Backend  │ │ (Knowledge   │ │ (Agentic    │
-    │           │ │ (LLM)   │ │  Graph)      │ │  Memory)    │
+    │PostgreSQL │ │ Core AI  │ │ CognitionOS  │ │ Memory Vault│
+    │ 16        │ │ Backend  │ │ (Knowledge   │ │ (Agentic    │
+    │ (local)   │ │ (LLM)   │ │  Graph)      │ │  Memory)    │
     └───────────┘ └──────────┘ └──────────────┘ └─────────────┘
 ```
 
@@ -90,8 +90,8 @@ git checkout main  # Standalone branch (no Manus deps)
 
 ```bash
 cat > .env << 'EOF'
-# Database (MySQL)
-DATABASE_URL=mysql://stockdash:stockdash_local_2024@db:3306/stockdash
+# Database (PostgreSQL)
+DATABASE_URL=postgresql://stockdash:stockdash_local_2024@db:5432/stockdash
 
 # Auth
 JWT_SECRET=<generate-a-random-32-char-string>
@@ -120,7 +120,7 @@ docker compose up -d --build
 ```
 
 This starts:
-- **MySQL 8.0** on port 3306 (with persistent volume)
+- **PostgreSQL 16** on port 5432 (with persistent volume)
 - **StockDash app** on port 3000
 
 ### 4. Run Database Migrations
@@ -130,8 +130,8 @@ This starts:
 docker compose exec app npx drizzle-kit generate
 docker compose exec app npx drizzle-kit migrate
 
-# Option B: Locally with DATABASE_URL pointing to the container's MySQL
-DATABASE_URL=mysql://stockdash:stockdash_local_2024@localhost:3306/stockdash \
+# Option B: Locally with DATABASE_URL pointing to the container's PostgreSQL
+DATABASE_URL=postgresql://stockdash:stockdash_local_2024@localhost:5432/stockdash \
 pnpm db:push
 ```
 
@@ -175,8 +175,8 @@ CORE_AI_BACKEND_JWT=<jwt> node scripts/register-skills.mjs
 # Install dependencies
 pnpm install
 
-# Set DATABASE_URL to a local MySQL instance
-export DATABASE_URL=mysql://user:pass@localhost:3306/stockdash
+# Set DATABASE_URL to a local PostgreSQL instance
+export DATABASE_URL=postgresql://user:pass@localhost:5432/stockdash
 export JWT_SECRET=dev-secret-change-in-prod
 export CORE_AI_BACKEND_URL=https://ai.s9n.dxb-gw.basanti.ai
 export COGNITION_OS_URL=https://cognition.s9n.dxb-gw.basanti.ai
@@ -226,12 +226,25 @@ server/routers.ts                   ← All tRPC procedures
 server/multiAgentAnalysis.ts        ← Multi-agent AI analysis pipeline
 server/sentimentNews.ts             ← News sentiment scoring
 server/yahooFallback.ts             ← Yahoo Finance data fetcher
-drizzle/schema.ts                   ← Database schema (MySQL)
-server/db.ts                        ← DB adapter (auto-detects MySQL vs PostgreSQL)
+drizzle/schema.ts                   ← Database schema (MySQL — used by Manus hosting)
+drizzle/schema-pg.ts                ← Database schema (PostgreSQL — used by SDDMini-KH)
+server/db.ts                        ← DB adapter (auto-detects MySQL vs PostgreSQL from DATABASE_URL)
 scripts/register-skills.mjs         ← One-time skill registration script
-docker-compose.yml                  ← Docker deployment (MySQL 8.0 + app)
+docker-compose.yml                  ← Docker deployment (PostgreSQL 16 + app)
 Dockerfile                          ← Multi-stage Node.js build
 ```
+
+---
+
+## Database Dialect
+
+The app supports both MySQL and PostgreSQL via dual schema files and auto-detection:
+
+- **`drizzle/schema.ts`** — MySQL tables (used when `DATABASE_URL` starts with `mysql://`)
+- **`drizzle/schema-pg.ts`** — PostgreSQL tables (used when `DATABASE_URL` starts with `postgresql://` or `postgres://`)
+- **`server/db.ts`** — Auto-detects dialect from `DATABASE_URL` prefix and loads the correct schema
+
+For the SDDMini-KH deployment, always use `postgresql://` in your `DATABASE_URL`.
 
 ---
 
