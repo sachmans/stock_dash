@@ -1,20 +1,22 @@
 version: "3.9"
 
 services:
-  # ── PostgreSQL Database ─────────────────────────────────────────────
+  # ── MySQL Database ──────────────────────────────────────────────────
   db:
-    image: postgres:16-alpine
+    image: mysql:8.0
     restart: unless-stopped
     environment:
-      POSTGRES_DB: stockdash
-      POSTGRES_USER: stockdash
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-stockdash_local_2024}
+      MYSQL_DATABASE: stockdash
+      MYSQL_USER: stockdash
+      MYSQL_PASSWORD: ${DB_PASSWORD:-stockdash_local_2024}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-stockdash_root_2024}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT:-3306}:3306"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mysqldata:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U stockdash -d stockdash"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "stockdash", "-p${DB_PASSWORD:-stockdash_local_2024}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -31,8 +33,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      # ── Database (PostgreSQL) ──
-      DATABASE_URL: postgresql://stockdash:${DB_PASSWORD:-stockdash_local_2024}@db:5432/stockdash
+      # ── Database (MySQL) ──
+      DATABASE_URL: mysql://stockdash:${DB_PASSWORD:-stockdash_local_2024}@db:3306/stockdash
 
       # ── Auth ──
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-32-chars-min}
@@ -55,5 +57,5 @@ services:
       NODE_ENV: production
 
 volumes:
-  pgdata:
+  mysqldata:
     driver: local

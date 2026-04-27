@@ -7,7 +7,7 @@ Docker Compose reads `.env` automatically.
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string. Format: `postgresql://user:pass@host:5432/dbname`. The app auto-detects dialect from URL prefix (`postgresql://` or `mysql://`). | `postgresql://stockdash:stockdash_local_2024@localhost:5432/stockdash` |
+| `DATABASE_URL` | MySQL connection string. Format: `mysql://user:pass@host:3306/dbname` | `mysql://stockdash:stockdash_local_2024@localhost:3306/stockdash` |
 | `JWT_SECRET` | Secret for signing JWT session tokens. Min 32 characters. | — |
 | `CORE_AI_BACKEND_URL` | URL of your Core AI Backend instance. `/v1/chat` needs no auth. Model routing: llamacpp (local Llama 3.3 / Gemma / Qwen) → Groq fallback. | `https://ai.s9n.dxb-gw.basanti.ai` |
 | `COGNITION_OS_URL` | URL of your CognitionOS instance (knowledge graph). | `https://cognition.s9n.dxb-gw.basanti.ai` |
@@ -27,5 +27,6 @@ Docker Compose reads `.env` automatically.
 
 | Variable | Description | Default |
 |---|---|---|
-| `DB_PASSWORD` | PostgreSQL password for the `stockdash` user in the docker-compose `db` service. | `stockdash_local_2024` |
-| `DB_PORT` | Expose PostgreSQL on this host port. | `5432` |
+| `DB_PASSWORD` | MySQL password for the `stockdash` user in the docker-compose `db` service. | `stockdash_local_2024` |
+| `DB_ROOT_PASSWORD` | MySQL root password for the docker-compose `db` service. | `stockdash_root_2024` |
+| `DB_PORT` | Expose MySQL on this host port. | `3306` |
