@@ -1,0 +1,11 @@
+Forge Fallback Implementation Notes
+=====================================
+Date: 2026-04-27
+
+1. Forge endpoint: BUILT_IN_FORGE_API_URL + /v1/chat/completions (OpenAI-compatible)
+2. Auth: Bearer BUILT_IN_FORGE_API_KEY
+3. Model used by Forge: gemini-2.5-flash
+4. The fallback is working - network logs show successful analysis responses
+5. The UI is rendering correctly with the portfolio dashboard
+6. The Forge calls succeed silently (no error logged after "Falling back to Manus Forge")
+7. Both aiProvider.ts and skillAwareProvider.ts have been updated with the fallback

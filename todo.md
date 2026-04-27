@@ -172,3 +172,6 @@
 - [x] Write vitest tests for skillLoader (YAML parsing, prompt rendering) — 10 tests pass
 - [x] Update stock.test.ts to mock executeSkill instead of aiInvoke — all 53 tests pass
 - [x] Push to GitHub with updated tag SDDMini-KH/v1.1.0
+
+## V4.1.2: Manus LLM Fallback (Temp Demo Fix)
+- [x] Add Manus Forge LLM (/v1/chat/completions) as fallback in aiProvider.ts and skillAwareProvider.ts when Core AI Backend is down

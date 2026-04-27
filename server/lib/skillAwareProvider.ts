@@ -6,15 +6,17 @@
  * Execution flow:
  * 1. Try remote skill execution via /v1/skills/run-by-name (requires JWT)
  * 2. Fall back to local prompt rendering + /v1/chat (no auth needed)
+ * 3. If Core AI is completely down, fall back to Manus Forge LLM
  *
  * Model preference:
  * - llamacpp_ip provider (local Llama 3.3 / Gemma / Qwen) → primary
  * - groq provider → fallback
+ * - Manus Forge → emergency fallback when Core AI is down
  */
 
 import { getSkill, renderPrompt, type SkillDefinition } from "./skillLoader";
 import { getCoreAIBackend } from "./coreAiBackend";
-import type { Message } from "../_core/llm";
+import type { Message, InvokeResult } from "../_core/llm";
 
 type CoreAiMessage = { role: string; content: string };
 
@@ -23,22 +25,17 @@ type CoreAiMessage = { role: string; content: string };
 export interface SkillExecutionResult {
   output: Record<string, unknown> | string;
   model_used: string;
-  execution_mode: "remote_skill" | "local_chat";
+  execution_mode: "remote_skill" | "local_chat" | "forge_fallback";
   skill_name: string;
   duration_ms: number;
 }
 
 // ── Model Configuration ──────────────────────────────────────────────
 
-/**
- * Model preference order:
- * 1. llamacpp_ip — local Llama 3.3 / Gemma / Qwen (no API key, fastest for local)
- * 2. groq — Groq-hosted open-source models (fast cloud inference)
- */
 const MODEL_PREFERENCE = {
   fast: {
     provider: "llamacpp_ip",
-    model: undefined, // use server default (Gemma / Qwen)
+    model: undefined,
     fallback_provider: "groq",
     fallback_model: "llama-3.3-70b-versatile",
   },
@@ -56,6 +53,42 @@ const MODEL_PREFERENCE = {
   },
 };
 
+// ── Manus Forge Fallback ─────────────────────────────────────────────
+
+const FORGE_API_URL = process.env.BUILT_IN_FORGE_API_URL || "";
+const FORGE_API_KEY = process.env.BUILT_IN_FORGE_API_KEY || "";
+
+function isForgeAvailable(): boolean {
+  return !!(FORGE_API_URL && FORGE_API_KEY);
+}
+
+async function invokeForge(
+  messages: CoreAiMessage[],
+  options?: { temperature?: number; maxTokens?: number }
+): Promise<InvokeResult> {
+  const url = `${FORGE_API_URL}/v1/chat/completions`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${FORGE_API_KEY}`,
+    },
+    body: JSON.stringify({
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      temperature: options?.temperature ?? 0.3,
+      max_tokens: options?.maxTokens ?? 2048,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Manus Forge returned ${resp.status}: ${text}`);
+  }
+
+  return (await resp.json()) as InvokeResult;
+}
+
 // ── Remote Skill Execution ───────────────────────────────────────────
 
 const CORE_AI_URL =
@@ -69,7 +102,6 @@ async function tryRemoteSkillExecution(
   inputs: Record<string, unknown>,
   modelOverride?: string
 ): Promise<SkillExecutionResult | null> {
-  // Skip if no JWT configured
   if (!CORE_AI_JWT) {
     if (_remoteSkillsAvailable === null) {
       console.log(
@@ -129,7 +161,7 @@ async function tryRemoteSkillExecution(
   }
 }
 
-// ── Local Skill Execution (via /v1/chat) ─────────────────────────────
+// ── Local Skill Execution (via /v1/chat → Forge fallback) ────────────
 
 async function localSkillExecution(
   skill: SkillDefinition,
@@ -148,11 +180,14 @@ async function localSkillExecution(
     { role: "user", content: userPrompt },
   ];
 
-  // Try local llamacpp first
+  // Try Core AI Backend first
   try {
     const client = getCoreAIBackend();
     const result = await client.invoke({
-      messages: messages.map(m => ({ role: m.role as any, content: m.content })),
+      messages: messages.map((m) => ({
+        role: m.role as any,
+        content: m.content,
+      })),
       temperature: 0.3,
       maxTokens: 2048,
     });
@@ -166,29 +201,43 @@ async function localSkillExecution(
       skill_name: skill.name,
       duration_ms: Date.now() - start,
     };
-  } catch (err) {
-    // Fallback to Groq
+  } catch (coreErr) {
     console.warn(
-      `[SkillProvider] llamacpp failed for ${skill.name}, trying Groq:`,
-      err
+      `[SkillProvider] Core AI failed for ${skill.name}:`,
+      (coreErr as Error).message
     );
 
-    const client = getCoreAIBackend();
-    const result = await client.invoke({
-      messages: messages.map(m => ({ role: m.role as any, content: m.content })),
-      temperature: 0.3,
-      maxTokens: 2048,
-    });
+    // ── Manus Forge Fallback ──
+    if (isForgeAvailable()) {
+      console.warn(
+        `[SkillProvider] Falling back to Manus Forge for ${skill.name}`
+      );
+      try {
+        const result = await invokeForge(messages, {
+          temperature: 0.3,
+          maxTokens: 2048,
+        });
+        const content = String(result.choices?.[0]?.message?.content || "");
 
-    const content = String(result.choices?.[0]?.message?.content || "");
+        return {
+          output: jsonMode ? safeJsonParse(content) : content,
+          model_used: result.model || "manus-forge",
+          execution_mode: "forge_fallback",
+          skill_name: skill.name,
+          duration_ms: Date.now() - start,
+        };
+      } catch (forgeErr) {
+        console.error(
+          `[SkillProvider] Forge fallback also failed for ${skill.name}:`,
+          (forgeErr as Error).message
+        );
+        throw new Error(
+          `All providers failed for ${skill.name}. Core AI: ${(coreErr as Error).message} | Forge: ${(forgeErr as Error).message}`
+        );
+      }
+    }
 
-    return {
-      output: jsonMode ? safeJsonParse(content) : content,
-      model_used: result.model || tier.fallback_model || "groq",
-      execution_mode: "local_chat",
-      skill_name: skill.name,
-      duration_ms: Date.now() - start,
-    };
+    throw coreErr;
   }
 }
 
@@ -196,7 +245,8 @@ async function localSkillExecution(
 
 /**
  * Execute a registered skill by name.
- * Tries remote execution first, falls back to local prompt rendering.
+ * Tries remote execution first, falls back to local prompt rendering,
+ * then to Manus Forge if Core AI is completely down.
  */
 export async function executeSkill(
   skillName: string,
@@ -215,7 +265,7 @@ export async function executeSkill(
     if (remoteResult) return remoteResult;
   }
 
-  // Fall back to local execution
+  // Fall back to local execution (with Forge fallback built in)
   const skill = getSkill(skillName);
   if (!skill) {
     throw new Error(
@@ -229,6 +279,7 @@ export async function executeSkill(
 /**
  * Execute a raw chat message (for Kora chat and ad-hoc queries).
  * Uses the kora_chat skill's system prompt but with custom user messages.
+ * Falls back to Manus Forge if Core AI is down.
  */
 export async function executeChat(
   messages: CoreAiMessage[],
@@ -249,11 +300,14 @@ export async function executeChat(
 
   const tier = MODEL_PREFERENCE.balanced;
 
+  // Try Core AI Backend
   try {
-    // Try local llamacpp first
     const client = getCoreAIBackend();
     const result = await client.invoke({
-      messages: fullMessages.map(m => ({ role: m.role as any, content: m.content })),
+      messages: fullMessages.map((m) => ({
+        role: m.role as any,
+        content: m.content,
+      })),
       temperature: 0.7,
       maxTokens: 2048,
     });
@@ -263,22 +317,38 @@ export async function executeChat(
       model: result.model || tier.provider,
       duration_ms: Date.now() - start,
     };
-  } catch (err) {
-    // Fallback to Groq
-    console.warn(`[SkillProvider] llamacpp failed for chat, trying Groq`);
+  } catch (coreErr) {
+    console.warn(
+      `[SkillProvider] Core AI failed for chat:`,
+      (coreErr as Error).message
+    );
 
-    const client = getCoreAIBackend();
-    const result = await client.invoke({
-      messages: fullMessages.map(m => ({ role: m.role as any, content: m.content })),
-      temperature: 0.7,
-      maxTokens: 2048,
-    });
+    // ── Manus Forge Fallback ──
+    if (isForgeAvailable()) {
+      console.warn(`[SkillProvider] Falling back to Manus Forge for chat`);
+      try {
+        const result = await invokeForge(fullMessages, {
+          temperature: 0.7,
+          maxTokens: 2048,
+        });
 
-    return {
-      content: String(result.choices?.[0]?.message?.content || ""),
-      model: result.model || tier.fallback_model || "groq",
-      duration_ms: Date.now() - start,
-    };
+        return {
+          content: String(result.choices?.[0]?.message?.content || ""),
+          model: result.model || "manus-forge",
+          duration_ms: Date.now() - start,
+        };
+      } catch (forgeErr) {
+        console.error(
+          `[SkillProvider] Forge fallback also failed for chat:`,
+          (forgeErr as Error).message
+        );
+        throw new Error(
+          `All providers failed for chat. Core AI: ${(coreErr as Error).message} | Forge: ${(forgeErr as Error).message}`
+        );
+      }
+    }
+
+    throw coreErr;
   }
 }
 
@@ -286,7 +356,6 @@ export async function executeChat(
 
 function safeJsonParse(text: string): Record<string, unknown> | string {
   try {
-    // Extract JSON from markdown code blocks if present
     const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
     const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
     return JSON.parse(jsonStr);
