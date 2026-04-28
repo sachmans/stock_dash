@@ -2,13 +2,11 @@
  * Core AI Backend Client
  * 
  * Calls the live Core AI Backend at ai.s9n.dxb-gw.basanti.ai.
- * The /v1/chat endpoint requires NO authentication.
+ * Uses the OpenAI-compatible /v1/chat/completions endpoint.
+ * No authentication required.
  * 
- * Response format (flat):
- *   { response: string, model: string, usage: {...}, finish_reason: string }
- * 
- * This adapter normalizes the response into the InvokeResult format
- * (OpenAI-compatible) so it can be used as a drop-in replacement for invokeLLM.
+ * Response format (OpenAI-compatible):
+ *   { id, object, created, model, choices: [{ index, message, finish_reason }], usage }
  */
 
 import type { InvokeParams, InvokeResult, Message } from "../_core/llm";
@@ -17,27 +15,33 @@ import type { InvokeParams, InvokeResult, Message } from "../_core/llm";
 
 const DEFAULT_BASE_URL = 'https://ai.s9n.dxb-gw.basanti.ai';
 const TIMEOUT_MS = 60_000; // 60s for LLM calls
+const DEFAULT_MODEL = 'groq/llama-3.3-70b-versatile';
 
 /* ─── Types ─── */
 
-interface CoreAIChatRequest {
+interface OpenAIChatRequest {
+  model: string;
   messages: Array<{ role: string; content: string }>;
-  model?: string;
   temperature?: number;
   max_tokens?: number;
-  org_id?: string;
-  user_id?: string;
+  response_format?: any;
 }
 
-interface CoreAIChatResponse {
-  response: string;
+interface OpenAIChatResponse {
+  id: string;
+  object: string;
+  created: number;
   model: string;
+  choices: Array<{
+    index: number;
+    message: { role: string; content: string; tool_calls?: any };
+    finish_reason: string;
+  }>;
   usage: {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
   };
-  finish_reason: string;
 }
 
 interface CoreAIGenerateRequest {
@@ -66,15 +70,15 @@ export class CoreAIBackendClient {
   }
 
   /**
-   * Call /v1/chat — the main conversational endpoint.
-   * No auth required. Returns flat { response, model, usage, finish_reason }.
+   * Call /v1/chat/completions — the OpenAI-compatible endpoint.
+   * No auth required. Returns standard OpenAI chat completion response.
    */
-  async chat(params: CoreAIChatRequest): Promise<CoreAIChatResponse> {
+  async chatCompletions(params: OpenAIChatRequest): Promise<OpenAIChatResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      const res = await fetch(`${this.baseUrl}/v1/chat`, {
+      const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -83,10 +87,10 @@ export class CoreAIBackendClient {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`Core AI /v1/chat returned ${res.status}: ${text}`);
+        throw new Error(`Core AI /v1/chat/completions returned ${res.status}: ${text}`);
       }
 
-      return await res.json() as CoreAIChatResponse;
+      return await res.json() as OpenAIChatResponse;
     } finally {
       clearTimeout(timer);
     }
@@ -140,13 +144,12 @@ export class CoreAIBackendClient {
   /**
    * invokeLLM-compatible wrapper.
    * 
-   * Takes InvokeParams (OpenAI format), calls /v1/chat,
-   * and normalizes the flat response into InvokeResult format.
+   * Takes InvokeParams (OpenAI format), calls /v1/chat/completions,
+   * and returns the response directly (already in OpenAI format).
    * 
-   * NOTE: The Core AI Backend /v1/chat does NOT support response_format
-   * (JSON schema enforcement). When response_format is specified, we embed
-   * the JSON schema instructions into the system prompt so the model
-   * still returns structured JSON.
+   * NOTE: If the Core AI Backend doesn't support response_format
+   * (JSON schema enforcement), we embed the JSON schema instructions
+   * into the system prompt so the model still returns structured JSON.
    */
   async invoke(params: InvokeParams): Promise<InvokeResult> {
     // Flatten messages to { role, content } strings
@@ -156,6 +159,7 @@ export class CoreAIBackendClient {
     }));
 
     // If response_format with json_schema is specified, inject schema into system prompt
+    // (in case the backend LiteLLM doesn't support it natively)
     const responseFormat = params.responseFormat || params.response_format;
     if (responseFormat && responseFormat.type === 'json_schema') {
       const schema = responseFormat.json_schema;
@@ -170,24 +174,25 @@ export class CoreAIBackendClient {
       }
     }
 
-    const chatResponse = await this.chat({
+    const chatResponse = await this.chatCompletions({
+      model: DEFAULT_MODEL,
       messages,
       max_tokens: params.maxTokens || params.max_tokens,
     });
 
-    // Normalize flat response → InvokeResult (OpenAI format)
+    // Response is already in OpenAI format, just normalize the types
     return {
-      id: `coreai-${Date.now()}`,
-      created: Math.floor(Date.now() / 1000),
+      id: chatResponse.id,
+      created: chatResponse.created,
       model: chatResponse.model,
-      choices: [{
-        index: 0,
+      choices: chatResponse.choices.map(c => ({
+        index: c.index,
         message: {
-          role: 'assistant',
-          content: chatResponse.response,
+          role: c.message.role as 'assistant',
+          content: c.message.content,
         },
-        finish_reason: chatResponse.finish_reason || 'stop',
-      }],
+        finish_reason: c.finish_reason || 'stop',
+      })),
       usage: chatResponse.usage,
     };
   }

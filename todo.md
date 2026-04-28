@@ -175,3 +175,11 @@
 
 ## V4.1.2: Manus LLM Fallback (Temp Demo Fix)
 - [x] Add Manus Forge LLM (/v1/chat/completions) as fallback in aiProvider.ts and skillAwareProvider.ts when Core AI Backend is down
+
+## V4.1.3: Fix AI Analysis Still Failing
+- [x] Root cause: coreAiBackend.ts used /v1/chat (hangs) instead of /v1/chat/completions (works)
+- [x] Root cause: skills.yaml prompt template returned wrong field names (targets/keyFactors vs bullCase/bearCase/keyLevels)
+- [x] Updated coreAiBackend.ts to use /v1/chat/completions (OpenAI-compatible endpoint)
+- [x] Updated skills.yaml financial_analysis prompt to return bullCase, bearCase, keyLevels, riskLevel, catalysts
+- [x] Verified analysis returns full BUY/SELL recommendations with proper bull/bear cases
+- [x] All 53 tests pass across 6 files

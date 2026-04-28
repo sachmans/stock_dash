@@ -34,16 +34,22 @@ skills:
       {{ knowledge_context }}
       {% endif %}
 
-      Provide your analysis as JSON with this structure:
+      Provide your analysis as JSON with EXACTLY this structure:
       {
-        "summary": "2-3 sentence overview",
-        "recommendation": "BUY | SELL | HOLD",
-        "confidence": 0.0-1.0,
-        "targets": { "entry": number, "stopLoss": number, "takeProfit": number },
-        "keyFactors": ["factor1", "factor2", "factor3"],
-        "risks": ["risk1", "risk2"],
-        "timeframe": "short-term | medium-term | long-term"
+        "summary": "2-3 sentence overview of the current situation",
+        "recommendation": "STRONG_BUY" or "BUY" or "HOLD" or "SELL" or "STRONG_SELL",
+        "confidence": number between 0 and 100,
+        "bullCase": "1-2 sentence bull case with specific price targets",
+        "bearCase": "1-2 sentence bear case with specific downside levels",
+        "keyLevels": {
+          "support": number (nearest support price level),
+          "resistance": number (nearest resistance price level),
+          "target": number (price target if recommendation is followed)
+        },
+        "riskLevel": "LOW" or "MEDIUM" or "HIGH" or "VERY_HIGH",
+        "catalysts": ["upcoming catalyst 1", "catalyst 2", "catalyst 3"]
       }
+      Return ONLY the JSON object, no markdown, no explanation.
     input_schema:
       type: object
       properties:
